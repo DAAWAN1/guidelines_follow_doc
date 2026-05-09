@@ -9,3 +9,5 @@ Pillow>=10.0
 pdf2image>=1.16
 torch
 torchvision
+huggingface-hub>=0.17
+scikit-learn>=1.2
