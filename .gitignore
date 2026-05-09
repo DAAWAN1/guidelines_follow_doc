@@ -1,6 +1,2 @@
 venv
 .env
-chunks.json
-embeddings.pkl
-guidelines_chunks.json
-guidelines_embeddings.pkl
