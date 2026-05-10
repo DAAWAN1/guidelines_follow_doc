@@ -60,95 +60,106 @@ def extract_text_and_images(uploaded_file):
         return "", 0
 
 # ------------------------------------------------------------------
-# Clean article text: extract only the actual article content
-# (Section 2: FULL TEXT EXTRACTION, before any forensic analysis)
+# Robust article content extractor (removes all forensic markup)
 # ------------------------------------------------------------------
 def clean_article_text(raw_text: str) -> str:
     """
-    Extract only the actual knowledge article content from the PDF text.
-    Assumes the PDF contains a "SECTION 2: FULL TEXT EXTRACTION" block
-    that holds the pure article text (title, headings, body, tables, etc.).
-    If not found, falls back to a broader cleaning method.
+    Extract only the real knowledge article content from SECTION 2.
+    Returns a string with clean sentences suitable for readability analysis.
     """
-    # Try to find the start of the actual article content
-    # Look for patterns like "## [ARTICLE TITLE]" or "> Getting started:"
-    # which appear after SECTION 2.
-    
-    # Method 1: Extract between "SECTION 2: FULL TEXT EXTRACTION" and "SECTION 3:"
+    # Step 1: Isolate SECTION 2 (Full Text Extraction)
     match = re.search(r"SECTION 2: FULL TEXT EXTRACTION(.*?)(?:SECTION 3:|$)", raw_text, re.DOTALL | re.IGNORECASE)
-    if match:
-        content = match.group(1)
-        # Remove any remaining forensic markers like "## [SECTION HEADING 1]" but keep the actual heading
-        # Also remove lines starting with "## [" as they are just labels
-        lines = content.splitlines()
-        cleaned_lines = []
-        for line in lines:
-            stripped = line.strip()
-            # Skip lines that are just markers like "## [SECTION HEADING 1]"
-            if re.match(r"^##\s*\[[^\]]+\]$", stripped):
-                continue
-            # Remove leading "> " if present (often used for quoted text)
-            if stripped.startswith(">"):
-                stripped = stripped[1:].strip()
-            # Remove extra markdown like "**" but keep text
-            # Also remove "*(Note: ...)*" but keep the note text if relevant
-            stripped = re.sub(r"\*\*([^*]+)\*\*", r"\1", stripped)  # remove bold markers
-            stripped = re.sub(r"\*\(Note:\s*(.*?)\)\*", r"Note: \1", stripped)  # clean note formatting
-            if stripped:
-                cleaned_lines.append(stripped)
-        return "\n".join(cleaned_lines)
-    
-    # Method 2: Fallback – remove all lines that look like forensic metadata
-    # (font families, hex colors, "IMAGE/VISUAL", "Colour Role", etc.)
-    lines = raw_text.splitlines()
-    cleaned = []
-    skip = False
+    if not match:
+        # Fallback: try to find any content after "SECTION 2"
+        match = re.search(r"SECTION 2:.*?\n(.*?)(?:SECTION \d+:|$)", raw_text, re.DOTALL | re.IGNORECASE)
+    if not match:
+        # If no SECTION 2, return empty (but we'll fallback to original)
+        return ""
+
+    content = match.group(1)
+
+    # Step 2: Split into lines and clean
+    lines = content.splitlines()
+    cleaned_lines = []
+
+    # Patterns to remove (forensic markers)
+    skip_patterns = [
+        r"^##\s*\[.*\]$",           # ## [ARTICLE TITLE], ## [SECTION HEADING 1]
+        r"^#\s*$",                  # lone '#'
+        r"^---+$",                  # horizontal rule
+        r"^\*\s*\(Note:.*\)\*$",    # *(Note: ...)*
+        r"^\* \(This is a button.*\) \*$",
+        r"^\[.*\]$",                # [BUTTON TEXT], [TABLE - ...]
+        r"^> \*\(Dark pill.*\)\*$",
+        r"^text\[.*\]$",            # text[[108, 366,...]]
+        r"^\|\s*-+\s*\|",           # table separator line |---|
+        r"^\s*\*$",                 # lone asterisk
+    ]
+
     for line in lines:
         stripped = line.strip()
-        # Skip empty lines? Keep some for structure.
+        # Skip empty lines? Keep for sentence separation but will be normalized later.
         if not stripped:
-            cleaned.append("")
             continue
-        
-        # Skip lines that are clearly forensic analysis
-        if re.search(r"SECTION \d+: (TYPOGRAPHY|COLOUR|LAYOUT|IMAGE|STRUCTURAL|SCANNER)", stripped, re.IGNORECASE):
-            skip = True
+
+        # Skip if matches any forensic pattern
+        skip = False
+        for pat in skip_patterns:
+            if re.match(pat, stripped, re.IGNORECASE):
+                skip = True
+                break
+        if skip:
             continue
-        if re.search(r"^\d+\.\d+ - ", stripped):  # "3.1 - Article Title"
-            skip = True
-            continue
-        if re.search(r"^\*\*Font (Family|Weight|Size|Colour|Alignment|Decoration|Spacing|Margin):", stripped, re.IGNORECASE):
-            continue
-        if re.search(r"^Colour Role \|", stripped):
-            continue
-        if re.search(r"^IMAGE/VISUAL \d+", stripped, re.IGNORECASE):
-            continue
-        if re.search(r"^\| - - - \|", stripped):
-            continue
-        if re.search(r"^=====", stripped):
-            continue
-        if re.search(r"^\d+ \d+ \d+", stripped) and len(stripped) > 50:  # long number sequences
-            continue
-        if re.match(r"^[\d\s]+$", stripped) and len(stripped) > 10:
-            continue
-        
-        # If we hit a non-forensic line, turn skip off
-        if skip and not re.search(r"(Font|Colour|IMAGE|Table Type|Heading levels)", stripped, re.IGNORECASE):
-            skip = False
-        
-        if not skip:
-            # Remove markdown bold/italic but keep text
-            cleaned_line = re.sub(r"\*\*([^*]+)\*\*", r"\1", stripped)
-            cleaned_line = re.sub(r"\*([^*]+)\*", r"\1", cleaned_line)
-            cleaned.append(cleaned_line)
-    
-    # Join and remove excessive blank lines
-    result = "\n".join(cleaned)
-    result = re.sub(r"\n\s*\n", "\n\n", result).strip()
-    return result
+
+        # Remove leading "> " if present (used for quoted text)
+        if stripped.startswith(">"):
+            stripped = stripped[1:].strip()
+
+        # Remove markdown bold/italic but keep text
+        stripped = re.sub(r"\*\*([^*]+)\*\*", r"\1", stripped)
+        stripped = re.sub(r"\*([^*]+)\*", r"\1", stripped)
+
+        # Remove any remaining special characters that aren't sentence delimiters
+        # But keep periods, commas, spaces, letters, numbers, and basic punctuation.
+        stripped = re.sub(r"[^\w\s\.\,\!\?\;\:\-\(\)]", " ", stripped)
+        # Collapse multiple spaces
+        stripped = re.sub(r"\s+", " ", stripped).strip()
+
+        if stripped and len(stripped) > 1:  # ignore single characters
+            cleaned_lines.append(stripped)
+
+    # Join into a single block of text
+    text_block = " ".join(cleaned_lines)
+
+    # Normalize spacing around periods for sentence splitting
+    text_block = re.sub(r"\.\s+", ". ", text_block)
+    text_block = re.sub(r"\s+", " ", text_block).strip()
+
+    return text_block
 
 # ------------------------------------------------------------------
-# Full compliance checker (updated with cleaned text for readability)
+# Accurate sentence count (handles abbreviations)
+# ------------------------------------------------------------------
+def count_sentences(text: str) -> int:
+    """
+    Count sentences using a more robust approach: split on '.', '!', '?'
+    but avoid splitting on common abbreviations (e.g., 'e.g.', 'i.e.').
+    This is a simplified version; for extreme accuracy we could use nltk,
+    but this works for typical article text.
+    """
+    # Replace common abbreviations with a placeholder that won't be split
+    abbrev = re.compile(r'\b(?:e\.g|i\.e|vs\.|etc\.|Mr\.|Ms\.|Dr\.|Prof\.|Ltd\.|Inc\.|Corp\.)\b', re.IGNORECASE)
+    text = abbrev.sub(lambda m: m.group(0).replace('.', '@@@'), text)
+    # Split on . ! ? followed by space or end of string
+    sentences = re.split(r'[.!?]\s+', text)
+    # Restore abbreviations
+    sentences = [s.replace('@@@', '.') for s in sentences]
+    # Filter out empty strings
+    sentences = [s for s in sentences if s.strip()]
+    return len(sentences)
+
+# ------------------------------------------------------------------
+# Full compliance checker (updated with accurate sentence length)
 # ------------------------------------------------------------------
 def check_article_compliance(article_text: str, has_images: bool) -> list:
     """
@@ -348,25 +359,31 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
     else:
         rules.append({"rule": "Attachments are supplementary, not primary", "status": "⚠️ Warning", "explanation": "No statement; ensure article is self‑contained."})
 
-    # ----- 25. Plain language: short sentences (using CLEANED text – article content only) -----
-    sentence_count = textstat.sentence_count(cleaned_text)
-    total_words = len(cleaned_text.split())
-    if sentence_count > 0:
-        avg_len = total_words / sentence_count
-        if avg_len < 20:
-            rules.append({"rule": "Plain language: short sentences (average <20 words)", "status": "✅ Followed", "explanation": f"Average sentence length {avg_len:.1f} words (based on extracted article content)."})
+    # ----- 25. Plain language: short sentences (using cleaned text and custom sentence counter) -----
+    if cleaned_text:
+        sentence_count = count_sentences(cleaned_text)
+        total_words = len(cleaned_text.split())
+        if sentence_count > 0:
+            avg_len = total_words / sentence_count
+            if avg_len < 20:
+                rules.append({"rule": "Plain language: short sentences (average <20 words)", "status": "✅ Followed", "explanation": f"Average sentence length {avg_len:.1f} words (based on extracted article content)."})
+            else:
+                rules.append({"rule": "Plain language: short sentences (average <20 words)", "status": "❌ Violated", "explanation": f"Average {avg_len:.1f} words – too long (based on extracted article content)."})
         else:
-            rules.append({"rule": "Plain language: short sentences (average <20 words)", "status": "❌ Violated", "explanation": f"Average {avg_len:.1f} words – too long (based on extracted article content)."})
+            rules.append({"rule": "Plain language: short sentences", "status": "⚠️ Undetermined", "explanation": "Could not compute sentence count from article content."})
     else:
-        rules.append({"rule": "Plain language: short sentences", "status": "⚠️ Undetermined", "explanation": "Could not compute sentence count from article content."})
+        rules.append({"rule": "Plain language: short sentences", "status": "⚠️ Undetermined", "explanation": "No clean article content found for readability analysis."})
 
     # ----- 26. Plain language: active voice (heuristic) – also use cleaned text -----
-    passive_patterns = r"\b(am|are|is|was|were|be|been|being)\s+(\w+ed|\w+en)\b"
-    passive_matches = len(re.findall(passive_patterns, cleaned_text, re.IGNORECASE))
-    if passive_matches < 5:
-        rules.append({"rule": "Plain language: active voice preferred", "status": "✅ Followed", "explanation": f"Only {passive_matches} passive constructions in article content."})
+    if cleaned_text:
+        passive_patterns = r"\b(am|are|is|was|were|be|been|being)\s+(\w+ed|\w+en)\b"
+        passive_matches = len(re.findall(passive_patterns, cleaned_text, re.IGNORECASE))
+        if passive_matches < 5:
+            rules.append({"rule": "Plain language: active voice preferred", "status": "✅ Followed", "explanation": f"Only {passive_matches} passive constructions in article content."})
+        else:
+            rules.append({"rule": "Plain language: active voice preferred", "status": "⚠️ Warning", "explanation": f"{passive_matches} passive phrases found; rewrite to active where possible."})
     else:
-        rules.append({"rule": "Plain language: active voice preferred", "status": "⚠️ Warning", "explanation": f"{passive_matches} passive phrases found; rewrite to active where possible."})
+        rules.append({"rule": "Plain language: active voice preferred", "status": "⚠️ Undetermined", "explanation": "No clean article content available."})
 
     # ----- 27. Spacing: no blank line after heading -----
     if re.search(r"(Heading 2|^#+\s+.*)\n\s*\n\s*\w", article_text, re.MULTILINE):
@@ -501,4 +518,4 @@ else:
     st.info("Please upload a PDF to begin compliance checking.")
 
 st.markdown("---")
-st.caption("Compliance validation based on GSK Knowledge Article Guidelines. Image detection uses actual PDF image streams; sentence length uses only extracted article content (forensic markup removed).")
+st.caption("Compliance validation based on GSK Knowledge Article Guidelines. Image detection uses actual PDF image streams; sentence length uses only extracted article content with custom sentence tokenizer.")
