@@ -83,13 +83,24 @@ st.markdown(
     }
     /* Force each tab panel to be a scrollable white container */
     div[data-testid="stTabs"] div[role="tabpanel"] {
-        max-height: 400px !important;     /* adjust height (or use 60vh) */
+        max-height: 300px !important;     /* adjust height (or use 60vh) */
         overflow-y: auto !important;
         background-color: white !important;
         padding: 15px 20px !important;    /* top/bottom & left/right */
         border-radius: 4px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.08);  /* subtle shadow for depth */
         margin-top: 0;
+    }/* Equal-width tabs */
+    div[data-testid="stTabs"] [role="tablist"] {
+        display: grid !important;
+        grid-template-columns: 1fr 1fr 1fr;
+        width: 100%;
+    }
+
+    div[data-testid="stTabs"] [role="tablist"] button[role="tab"] {
+        width: 100% !important;
+        text-align: center;
+        justify-content: center;   /* centers tab text horizontally */
     }
     </style>
     """,
