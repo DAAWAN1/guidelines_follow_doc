@@ -102,10 +102,62 @@ st.markdown(
         text-align: center;
         justify-content: center;   /* centers tab text horizontally */
     }
+    [data-testid="stHeader"] {
+        display: none;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# Near the top of the file, after the existing custom CSS block, add:
+st.markdown(
+    """
+    <style>
+    /* Sidebar buttons – GSK orange with white text */
+    section[data-testid="stSidebar"] button[kind="secondary"],
+    section[data-testid="stSidebar"] button[kind="primary"] {
+        background-color: #F36633 !important;
+        color: white !important;
+        border-color: #F36633 !important;
+        width: 100%;
+        text-align: left;
+        padding: 0.5rem;
+        margin-bottom: 0.2rem;
+    }
+    section[data-testid="stSidebar"] button[kind="secondary"]:hover,
+    section[data-testid="stSidebar"] button[kind="primary"]:hover {
+        background-color: #e0552a !important;
+        color: white !important;
+    }
+    /* Active (selected) button darker border or slight shadow */
+    section[data-testid="stSidebar"] button[kind="primary"].selected-button {
+        border: 2px solid white;
+        font-weight: bold;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+def shorten_filename(filename: str, first=5, last=7) -> str:
+    """
+    Return a shortened display name without the .pdf extension.
+    
+    Examples:
+    - "document.pdf" -> "document"
+    - "verylongfilename.pdf" -> "veryl...name"
+    """
+
+    # Remove .pdf extension if present
+    name = re.sub(r"\.pdf$", "", filename, flags=re.IGNORECASE)
+
+    # Keep original if length is 9 characters or fewer
+    if len(name) <= 9:
+        return name
+
+    # Shorten long filenames
+    return f"{name[:first]}...{name[-last:]}"
 
 # ------------------------------------------------------------------
 # Logo section (add a logo.png file in the same directory)
@@ -113,12 +165,12 @@ st.markdown(
 st.image("GSK_LOGO.png", width=150)
 
 # ------------------------------------------------------------------
-# Session state
+# Session state initialisation for multiple files
 # ------------------------------------------------------------------
-if "article_text" not in st.session_state:
-    st.session_state.article_text = None
-if "image_count" not in st.session_state:
-    st.session_state.image_count = 0
+if "processed_files" not in st.session_state:
+    st.session_state.processed_files = {}   # key = filename, value = {"text":..., "image_count":..., "results":...}
+if "selected_file" not in st.session_state:
+    st.session_state.selected_file = None
 
 # ------------------------------------------------------------------
 # PDF text extraction + image count detection
@@ -555,86 +607,124 @@ Summary:"""
         return summary
 
 # ------------------------------------------------------------------
-# Main App
+# Main App – Multi‑document upload
 # ------------------------------------------------------------------
-st.header("Upload GSK Knowledge Article PDF")
+st.header("Upload GSK Knowledge Article PDFs")
 
-article_file = st.file_uploader(
-    """Upload a **GSK Knowledge Article PDF** to check compliance with all mandatory guidelines.
+# File uploader accepts multiple files
+uploaded_files = st.file_uploader(
+    """Upload one or more **GSK Knowledge Article PDFs** to check compliance.
     The app validates headings, tables, screenshots, notes, attachments, plain language,
     AQI checklist, and required sections (Audience, Prerequisites, Keywords, etc.).
     """,
     type=["pdf"],
+    accept_multiple_files=True,
     key="article_uploader",
 )
 
-if article_file is not None:
-    with st.spinner("Extracting article text and detecting images..."):
-        text, img_count = extract_text_and_images(article_file)
-        if not text.strip():
-            st.error("No text could be extracted from the PDF. Please check the file.")
-        else:
-            st.session_state.article_text = text
-            st.session_state.image_count = img_count
-            st.success(f"Article text extracted successfully. Detected {img_count} embedded image(s) in the PDF.")
+# Process each newly uploaded file ...
+if uploaded_files:
+    for file in uploaded_files:
+        if file.name not in st.session_state.processed_files or True:
+            with st.spinner(f"Processing {file.name}..."):
+                text, img_count = extract_text_and_images(file)
+                st.session_state.processed_files[file.name] = {
+                    "text": text,
+                    "image_count": img_count,
+                    "results": None
+                }
 
-# Run compliance analysis if we have article text
-if st.session_state.article_text is not None:
-    st.subheader("Full Compliance Analysis (All Guidelines)")
-    with st.spinner("Running all rule checks..."):
-        results = check_article_compliance(
-            st.session_state.article_text,
-            has_images=(st.session_state.image_count > 0)
-        )
+# 👇 INSERT THE DEFAULT SELECTION CODE HERE
+file_names = list(st.session_state.processed_files.keys())
+if file_names and (st.session_state.selected_file is None or st.session_state.selected_file not in file_names):
+    st.session_state.selected_file = file_names[0]
 
-    passed = [r for r in results if "Followed" in r["status"]]
-    warnings = [r for r in results if "Warning" in r["status"] or "Undetermined" in r["status"] or "Not applicable" in r["status"] or "Info" in r["status"]]
-    violated = [r for r in results if "Violated" in r["status"]]
+# Sidebar – document selection buttons
+st.sidebar.title("Uploaded Documents")
+file_names = list(st.session_state.processed_files.keys())
+selected_file = st.session_state.get("selected_file", None)
 
-    tab1, tab2, tab3 = st.tabs([
-        f"✅ Passed ({len(passed)})",
-        f"⚠️ Warnings ({len(warnings)})",
-        f"❌ Violated ({len(violated)})"
-    ])
+if file_names:
+    if selected_file and selected_file in file_names:
+        st.sidebar.success(f"Selected: {selected_file}")
 
-    with tab1:
-        if passed:
-            for r in passed:
-                with st.expander(f"{r['rule']}"):
-                    st.write(r["explanation"])
-        else:
-            st.info("No passed guidelines found.")
-
-    with tab2:
-        if warnings:
-            for r in warnings:
-                with st.expander(f"{r['rule']}"):
-                    st.write(r["explanation"])
-        else:
-            st.info("No warnings or undetermined items.")
-
-    with tab3:
-        if violated:
-            for r in violated:
-                with st.expander(f"{r['rule']}"):
-                    st.write(r["explanation"])
-        else:
-            st.info("No violations – excellent!")
-
-    st.write("### Summary")
-    client = load_inference_client()
-    summary = generate_summary_from_results(results, client)
-    st.success(summary)
-
-    report_text = "\n\n".join(
-        f"{r['status']} {r['rule']}\n{r['explanation']}" for r in results
-    )
-    st.download_button(
-        "Download Full Report",
-        data=report_text,
-        file_name="compliance_report.txt",
-        mime="text/plain",
-        type="primary",   # ← forces the button to match the primary (orange + white) style
-    )
+    st.sidebar.markdown("---")
+    for file in file_names:
+        is_active = (selected_file == file)
+        label = ("► " if is_active else "") + shorten_filename(file)
+        # Use 'primary' type for the active file, 'secondary' for others to enable CSS distinction
+        btn_type = "primary" if is_active else "secondary"
+        if st.sidebar.button(label, key=f"btn_{file}", type=btn_type):
+            st.session_state.selected_file = file
 else:
-    st.info("Please upload a PDF to begin compliance checking.")
+    st.sidebar.info("No documents uploaded yet.")
+# Main area – display results for the selected file
+if selected_file and selected_file in st.session_state.processed_files:
+    file_data = st.session_state.processed_files[selected_file]
+    article_text = file_data["text"]
+    image_count = file_data["image_count"]
+
+    if not article_text.strip():
+        st.error(f"No text could be extracted from {selected_file}. Please check the file.")
+    else:
+        st.subheader(f"Compliance Analysis: {selected_file}")
+
+        # Compute results if not already done
+        if file_data["results"] is None:
+            with st.spinner("Running all rule checks..."):
+                results = check_article_compliance(article_text, has_images=(image_count > 0))
+            st.session_state.processed_files[selected_file]["results"] = results
+        else:
+            results = file_data["results"]
+
+        passed = [r for r in results if "Followed" in r["status"]]
+        warnings = [r for r in results if "Warning" in r["status"] or "Undetermined" in r["status"] or "Not applicable" in r["status"] or "Info" in r["status"]]
+        violated = [r for r in results if "Violated" in r["status"]]
+
+        tab1, tab2, tab3 = st.tabs([
+            f"✅ Passed ({len(passed)})",
+            f"⚠️ Warnings ({len(warnings)})",
+            f"❌ Violated ({len(violated)})"
+        ])
+
+        with tab1:
+            if passed:
+                for r in passed:
+                    with st.expander(f"{r['rule']}"):
+                        st.write(r["explanation"])
+            else:
+                st.info("No passed guidelines found.")
+
+        with tab2:
+            if warnings:
+                for r in warnings:
+                    with st.expander(f"{r['rule']}"):
+                        st.write(r["explanation"])
+            else:
+                st.info("No warnings or undetermined items.")
+
+        with tab3:
+            if violated:
+                for r in violated:
+                    with st.expander(f"{r['rule']}"):
+                        st.write(r["explanation"])
+            else:
+                st.info("No violations – excellent!")
+
+        st.write("### Summary")
+        client = load_inference_client()
+        summary = generate_summary_from_results(results, client)
+        st.success(summary)
+
+        report_text = "\n\n".join(
+            f"{r['status']} {r['rule']}\n{r['explanation']}" for r in results
+        )
+        st.download_button(
+            f"Download Report for {selected_file}",
+            data=report_text,
+            file_name=f"compliance_report_{selected_file}.txt",
+            mime="text/plain",
+            type="primary",
+        )
+else:
+    st.info("Please upload PDFs to begin compliance checking. Use the sidebar to select a document after uploading.")
