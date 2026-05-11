@@ -23,10 +23,15 @@ st.set_page_config(page_title="GSK Document Intelligence", layout="wide")
 st.markdown(
     """
     <style>
-    /* Light mode background and text */
+    /* Light mode background and text – main page now white */
     .stApp {
-        background-color: #f0f2f6;
+        background-color: white;
         color: #31333F;
+    }
+
+    /* Keep the sidebar grey (#f0f2f6) */
+    section[data-testid="stSidebar"] {
+        background-color: #f0f2f6 !important;
     }
 
     /* Expander header (summary) styling: GSK orange, white text */
@@ -720,7 +725,7 @@ if selected_file and selected_file in st.session_state.processed_files:
             f"{r['status']} {r['rule']}\n{r['explanation']}" for r in results
         )
         st.download_button(
-            f"Download Report for {selected_file}",
+            f"Download Report",
             data=report_text,
             file_name=f"compliance_report_{selected_file}.txt",
             mime="text/plain",
