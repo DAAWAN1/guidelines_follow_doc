@@ -16,14 +16,90 @@ if os.getenv("HF_TOKEN"):
     os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN")
 
 st.set_page_config(page_title="GSK Document Intelligence", layout="wide")
-st.title("📄 GSK Document Intelligence")
+
+# ------------------------------------------------------------------
+# Custom CSS for light mode, GSK orange containers, info/success colours, and button styles
+# ------------------------------------------------------------------
 st.markdown(
     """
-    Upload a **GSK Knowledge Article PDF** to check compliance with all mandatory guidelines.
-    The app validates headings, tables, screenshots, notes, attachments, plain language,
-    AQI checklist, and required sections (Audience, Prerequisites, Keywords, etc.).
-    """
+    <style>
+    /* Light mode background and text */
+    .stApp {
+        background-color: #f0f2f6;
+        color: #31333F;
+    }
+
+    /* Expander header (summary) styling: GSK orange, white text */
+    div[data-testid="stExpander"] details summary {
+        background-color: #F36633 !important;
+        color: white !important;
+        border-radius: 4px;
+        padding: 8px 12px;
+        font-weight: bold;
+    }
+    /* Expander content area: white background, black text */
+    div[data-testid="stExpander"] details div[data-testid="stExpanderDetails"] {
+        background-color: white !important;
+        color: #31333F !important;
+        padding: 12px;
+    }
+
+    /* Recolour all info/success/warning notifications to #f29d80 */
+    div.stAlert {
+        background-color: #f29d80 !important;
+        color: white !important;
+        border-color: #f29d80 !important;
+    }
+    /* Ensure text inside alerts is white and legible */
+    div.stAlert p, div.stAlert span, div.stAlert div {
+        color: white !important;
+    }
+
+    /* Style the file upload button (Browse files) */
+    input[type="file"]::file-selector-button {
+        background-color: #F36633 !important;
+        color: white !important;
+        border: 1px solid #F36633 !important;
+        border-radius: 4px;
+        padding: 4px 12px;
+        font-weight: bold;
+    }
+    /* Optional: hover effect for the upload button */
+    input[type="file"]::file-selector-button:hover {
+        background-color: #e0552a !important;
+        border-color: #e0552a !important;
+    }
+
+    /* Style primary buttons (including download button now set as primary) */
+    button[kind="primary"] {
+        background-color: #F36633 !important;
+        color: white !important;
+        border-color: #F36633 !important;
+    }
+    button[kind="primary"]:hover {
+        background-color: #e0552a !important;
+        border-color: #e0552a !important;
+        color: white !important;
+    }
+    /* Force each tab panel to be a scrollable white container */
+    div[data-testid="stTabs"] div[role="tabpanel"] {
+        max-height: 400px !important;     /* adjust height (or use 60vh) */
+        overflow-y: auto !important;
+        background-color: white !important;
+        padding: 15px 20px !important;    /* top/bottom & left/right */
+        border-radius: 4px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);  /* subtle shadow for depth */
+        margin-top: 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
+
+# ------------------------------------------------------------------
+# Logo section (add a logo.png file in the same directory)
+# ------------------------------------------------------------------
+st.image("GSK_LOGO.png", width=150)
 
 # ------------------------------------------------------------------
 # Session state
@@ -159,7 +235,7 @@ def count_sentences(text: str) -> int:
     return len(sentences)
 
 # ------------------------------------------------------------------
-# Full compliance checker (updated with accurate sentence length)
+# Full compliance checker (unchanged logic)
 # ------------------------------------------------------------------
 def check_article_compliance(article_text: str, has_images: bool) -> list:
     """
@@ -470,10 +546,13 @@ Summary:"""
 # ------------------------------------------------------------------
 # Main App
 # ------------------------------------------------------------------
-st.header("📄 Upload GSK Knowledge Article PDF")
+st.header("Upload GSK Knowledge Article PDF")
 
 article_file = st.file_uploader(
-    "Choose the Knowledge Article PDF to verify",
+    """Upload a **GSK Knowledge Article PDF** to check compliance with all mandatory guidelines.
+    The app validates headings, tables, screenshots, notes, attachments, plain language,
+    AQI checklist, and required sections (Audience, Prerequisites, Keywords, etc.).
+    """,
     type=["pdf"],
     key="article_uploader",
 )
@@ -490,21 +569,52 @@ if article_file is not None:
 
 # Run compliance analysis if we have article text
 if st.session_state.article_text is not None:
-    st.markdown("---")
-    st.subheader("🔍 Full Compliance Analysis (All Guidelines)")
+    st.subheader("Full Compliance Analysis (All Guidelines)")
     with st.spinner("Running all rule checks..."):
         results = check_article_compliance(
             st.session_state.article_text,
             has_images=(st.session_state.image_count > 0)
         )
-    st.write(f"### Total rules evaluated: {len(results)}")
-    for r in results:
-        with st.expander(f"{r['status']} {r['rule']}"):
-            st.write(r["explanation"])
-    st.write("### 🧾 Overall Summary")
+
+    passed = [r for r in results if "Followed" in r["status"]]
+    warnings = [r for r in results if "Warning" in r["status"] or "Undetermined" in r["status"] or "Not applicable" in r["status"] or "Info" in r["status"]]
+    violated = [r for r in results if "Violated" in r["status"]]
+
+    tab1, tab2, tab3 = st.tabs([
+        f"✅ Passed ({len(passed)})",
+        f"⚠️ Warnings ({len(warnings)})",
+        f"❌ Violated ({len(violated)})"
+    ])
+
+    with tab1:
+        if passed:
+            for r in passed:
+                with st.expander(f"{r['rule']}"):
+                    st.write(r["explanation"])
+        else:
+            st.info("No passed guidelines found.")
+
+    with tab2:
+        if warnings:
+            for r in warnings:
+                with st.expander(f"{r['rule']}"):
+                    st.write(r["explanation"])
+        else:
+            st.info("No warnings or undetermined items.")
+
+    with tab3:
+        if violated:
+            for r in violated:
+                with st.expander(f"{r['rule']}"):
+                    st.write(r["explanation"])
+        else:
+            st.info("No violations – excellent!")
+
+    st.write("### Summary")
     client = load_inference_client()
     summary = generate_summary_from_results(results, client)
     st.success(summary)
+
     report_text = "\n\n".join(
         f"{r['status']} {r['rule']}\n{r['explanation']}" for r in results
     )
@@ -513,9 +623,7 @@ if st.session_state.article_text is not None:
         data=report_text,
         file_name="compliance_report.txt",
         mime="text/plain",
+        type="primary",   # ← forces the button to match the primary (orange + white) style
     )
 else:
     st.info("Please upload a PDF to begin compliance checking.")
-
-st.markdown("---")
-st.caption("Compliance validation based on GSK Knowledge Article Guidelines. Image detection uses actual PDF image streams; sentence length uses only extracted article content with custom sentence tokenizer.")
