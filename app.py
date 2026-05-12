@@ -30,11 +30,11 @@ if "selected_file" not in st.session_state:
 st.header("Upload GSK Knowledge Article PDFs")
 
 uploaded_files = st.file_uploader(
-    """Upload one or more **GSK Knowledge Article PDFs** to check compliance.
+    """Upload one or more **GSK Kno wledge Article** files (PDF or DOCX) to check compliance.
     The app validates headings, tables, screenshots, notes, attachments, plain language,
     AQI checklist, and required sections (Audience, Prerequisites, Keywords, etc.).
     """,
-    type=["pdf"],
+    type=["pdf", "docx"],   # ← only change here
     accept_multiple_files=True,
     key="article_uploader",
 )

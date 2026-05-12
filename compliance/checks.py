@@ -491,7 +491,6 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
         rules.append({"rule": "Keywords: no country/site names", "status": "❌ Violated",
                       "explanation": "One or more keywords are country names. Remove them."})
     else:
-        # If no keywords list at all we already reported violation; else it's followed
         if kw_list:
             rules.append({"rule": "Keywords: no country/site names", "status": "✅ Followed",
                           "explanation": "No country names found in keywords."})
@@ -500,13 +499,10 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
                           "explanation": "Keywords section missing or unparseable."})
 
     # ----- 39. Acronyms defined on first use -----
-    # Find potential acronyms (UPPERCASE words of 2+ chars)
-    acronym_candidates = re.findall(r'\b([A-Z]{2,}(?:\.[A-Z])?)\b', article_text)  # allows U.S. like?
+    acronym_candidates = re.findall(r'\b([A-Z]{2,}(?:\.[A-Z])?)\b', article_text)
     acronym_candidates = [a for a in acronym_candidates if len(a) >= 2 and a not in {'US', 'UK', 'EU', 'GSK', 'IT', 'HR', 'AI', 'OK', 'PDF', 'URL'}]
     undefined_acronyms = []
     for acro in acronym_candidates:
-        # look for definition pattern: either "acro (definition)" or "definition (acro)"
-        # search in surrounding text (simple approach: whole article)
         def_pattern = re.compile(r'\b' + re.escape(acro) + r'\s*\(([^)]+)\)|\(([^)]+)\)\s*' + re.escape(acro), re.IGNORECASE)
         if not def_pattern.search(article_text):
             undefined_acronyms.append(acro)
@@ -545,7 +541,6 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
     hashtags = re.findall(r'#(\w+)', article_text)
     non_camel = []
     for tag in hashtags:
-        # CamelCase means at least one uppercase letter after a lowercase
         if not re.search(r'[a-z][A-Z]', tag) and tag.islower():
             non_camel.append(f'#{tag}')
     if non_camel:
@@ -556,7 +551,6 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
                       "explanation": "All hashtags are CamelCase or not present."})
 
     # ----- 43. Links requiring sign‑in include note -----
-    # Check if any URL is in the text and the phrase "requires sign in" appears somewhere
     has_url = bool(re.search(r'https?://', article_text))
     has_signin_note = bool(re.search(r'requires sign[-\s]in to access', article_text, re.IGNORECASE))
     if has_url:
@@ -585,5 +579,196 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
     else:
         rules.append({"rule": "Body text uses Paragraph style", "status": "⚠️ Warning",
                       "explanation": "Not explicitly stated; ensure body text uses the 'Paragraph' style."})
+
+    # =====================================================================
+    # NEW CHECKS (46-53) based on missing rules identified
+    # =====================================================================
+
+    # ----- 46. Index/link page style prohibited -----
+    link_count = len(re.findall(r'https?://', article_text))
+    total_lines = len([l for l in article_text.splitlines() if l.strip()])
+    if link_count > 10 and (link_count > 0.5 * total_lines):
+        rules.append({"rule": "Article is not an index/link page", "status": "❌ Violated",
+                      "explanation": f"Too many links ({link_count}) relative to content lines ({total_lines}). Use a 'Getting Started' article instead."})
+    else:
+        rules.append({"rule": "Article is not an index/link page", "status": "✅ Followed",
+                      "explanation": "Link-to-text ratio is acceptable."})
+
+    # ----- 47. Calendar/schedule/time-bound content -----
+    if re.search(r'\b(202[2-9]|2030)\b', article_text) and re.search(r'\b(schedule|calendar|holiday|training dates|events)\b', article_text, re.IGNORECASE):
+        rules.append({"rule": "Time-bound content warning", "status": "⚠️ Warning",
+                      "explanation": "Calendar/schedule detected. Ensure a retirement date is set, or convert to a generic process article."})
+    else:
+        rules.append({"rule": "Time-bound content warning", "status": "✅ Followed",
+                      "explanation": "No obvious calendar/schedule content."})
+
+    # ----- 48. Policy references must link to external official source -----
+    if len(re.findall(r'\bpolicy\b', text_lower)) >= 2:
+        if not re.search(r'https?://', article_text):
+            rules.append({"rule": "Policy summary links to external source", "status": "❌ Violated",
+                          "explanation": "Article mentions policy but contains no hyperlink to the controlled document."})
+        else:
+            rules.append({"rule": "Policy summary links to external source", "status": "✅ Followed",
+                          "explanation": "External link present."})
+    else:
+        rules.append({"rule": "Policy summary links to external source", "status": "⚠️ Undetermined",
+                      "explanation": "No policy mention; check not applicable."})
+
+    # ----- 49. Dedicated Policy section when policy is mentioned -----
+    policy_mentions = len(re.findall(r'\bpolicy\b', text_lower))
+    if policy_mentions >= 2:
+        if re.search(r'\bPolicy\s*(Summary|Information)?\b', article_text):
+            rules.append({"rule": "Policy section present (when policy‑related)", "status": "✅ Followed",
+                          "explanation": "Found a dedicated Policy section."})
+        else:
+            rules.append({"rule": "Policy section present (when policy‑related)", "status": "⚠️ Warning",
+                          "explanation": "Article mentions policy but lacks a 'Policy' section. Add one per structure guidelines."})
+    else:
+        rules.append({"rule": "Policy section present (when policy‑related)", "status": "⚠️ Undetermined",
+                      "explanation": "Not policy‑related."})
+
+    # ----- 50. Video is not the sole source of information -----
+    if "video" in text_lower:
+        word_count = len(cleaned_text.split()) if cleaned_text else 0
+        has_transcript = re.search(r'transcript|text alternative|text version', article_text, re.IGNORECASE)
+        if word_count > 200 and has_transcript:
+            rules.append({"rule": "Video not sole information source", "status": "✅ Followed",
+                          "explanation": "Sufficient text and transcript/alternative mentioned."})
+        else:
+            rules.append({"rule": "Video not sole information source", "status": "⚠️ Warning",
+                          "explanation": "Video present but limited text description or no transcript. Provide written info alongside the video."})
+    else:
+        rules.append({"rule": "Video not sole information source", "status": "⚠️ Not applicable",
+                      "explanation": "No video mentioned."})
+
+    # ----- 51. No links to Team Sites (SharePoint) in public-facing articles -----
+    team_site_links = re.findall(r'https?://[^\s]*(teams\.microsoft|myteams\.gsk|sharepoint|\.gsk\.com/sites/)[^\s]*', article_text, re.IGNORECASE)
+    if team_site_links:
+        rules.append({"rule": "No Team Site links", "status": "⚠️ Warning",
+                      "explanation": f"Found Team Site/SharePoint link(s). Public articles should not rely on restricted-access sites. Use ServiceNow links or add '(requires sign in)'."})
+    else:
+        rules.append({"rule": "No Team Site links", "status": "✅ Followed",
+                      "explanation": "No Team Site links detected."})
+
+    # ----- 52. Positive, person‑first language -----
+    negative_terms = [
+        r'\bsuffers?\s+from\b', r'\bhandicapped\b', r'\bthe\s+disabled\b', r'\bdysfunction\b',
+        r'\bbound\s+to\b', r'\bchallenged\b', r'\bcrippled\b', r'\binvalid\b', r'\bdefect\b',
+        r'\bafflicted\b', r'\bstricken\b', r'\babnormal\b'
+    ]
+    found_negative = []
+    for pattern in negative_terms:
+        if re.search(pattern, article_text, re.IGNORECASE):
+            match = re.search(pattern, article_text, re.IGNORECASE)
+            if match:
+                found_negative.append(match.group())
+    if found_negative:
+        rules.append({"rule": "Positive, person‑first language", "status": "⚠️ Warning",
+                      "explanation": f"Potentially negative terms found: {', '.join(found_negative[:5])}. Use inclusive, person‑first language."})
+    else:
+        rules.append({"rule": "Positive, person‑first language", "status": "✅ Followed",
+                      "explanation": "No negative terminology detected."})
+
+    # ----- 53. Instructions use present tense (avoid past/sequential phrasing) -----
+    instruction_lines = [l.strip() for l in article_text.splitlines() if re.match(r'^\d+\.\s+', l.strip())]
+    past_tense_patterns = [
+        r'\bafter\s+you\s+have\b', r'\bonce\s+you\s+have\b', r'\bif\s+you\s+have\s+clicked\b',
+        r'\byou\s+will\s+have\b', r'\byou\s+would\s+have\b', r'\byou\s+clicked\b',
+        r'\bhad\s+to\b', r'\bhave\s+already\b', r'\bwas\s+opened\b', r'\bit\s+will\s+then\b'
+    ]
+    past_found = False
+    for line in instruction_lines:
+        for pat in past_tense_patterns:
+            if re.search(pat, line, re.IGNORECASE):
+                past_found = True
+                break
+        if past_found:
+            break
+    if past_found:
+        rules.append({"rule": "Instructions use present tense", "status": "⚠️ Warning",
+                      "explanation": "Found past or sequential phrasing in numbered steps. Use direct present tense (e.g., 'Click ...' not 'After you have clicked ...')."})
+    else:
+        rules.append({"rule": "Instructions use present tense", "status": "✅ Followed",
+                      "explanation": "No past‑tense issues detected in instructions."})
+
+    # =====================================================================
+    # ADDITIONAL CHECKS (54-59) from further document analysis
+    # =====================================================================
+
+    # ----- 54. Video motion warning present -----
+    if "video" in text_lower:
+        if re.search(r'motion\s+warn|warning.*motion|video.*contains.*motion', article_text, re.IGNORECASE):
+            rules.append({"rule": "Video motion warning present", "status": "✅ Followed",
+                          "explanation": "Motion warning mentioned."})
+        else:
+            rules.append({"rule": "Video motion warning present", "status": "⚠️ Warning",
+                          "explanation": "If video contains motion, add a warning before it plays."})
+    else:
+        rules.append({"rule": "Video motion warning present", "status": "⚠️ Not applicable",
+                      "explanation": "No video mentioned."})
+
+    # ----- 55. Terminology: 'HR Case' -> 'HR Ticket', 'HR Service Center' -> 'HR' -----
+    deprecated_terms = {'HR Case': 'HR Ticket', 'HR Service Center': 'HR'}
+    found_deprecated = []
+    for old, new in deprecated_terms.items():
+        if re.search(re.escape(old), article_text, re.IGNORECASE):
+            found_deprecated.append(old)
+    if found_deprecated:
+        rules.append({"rule": "Terminology: Use 'HR Ticket' not 'HR Case'; 'HR' not 'HR Service Center'", "status": "❌ Violated",
+                      "explanation": f"Found deprecated term(s): {', '.join(found_deprecated)}. Replace with approved terminology."})
+    else:
+        rules.append({"rule": "Terminology: Use 'HR Ticket' not 'HR Case'; 'HR' not 'HR Service Center'", "status": "✅ Followed",
+                      "explanation": "No deprecated terms found."})
+
+    # ----- 56. Capitalize 'Employee' and 'Manager' -----
+    lower_emp = len(re.findall(r'\bemployee\b', article_text))
+    lower_mgr = len(re.findall(r'\bmanager\b', article_text))
+    if lower_emp > 0 or lower_mgr > 0:
+        rules.append({"rule": "Capitalize 'Employee' and 'Manager'", "status": "⚠️ Warning",
+                      "explanation": f"Found 'employee' ({lower_emp} times) or 'manager' ({lower_mgr} times) in lowercase. Capitalize them."})
+    else:
+        rules.append({"rule": "Capitalize 'Employee' and 'Manager'", "status": "✅ Followed",
+                      "explanation": "Appropriate capitalization."})
+
+    # ----- 57. Article has an Instructions or Information section -----
+    has_instructions = re.search(r'\bInstructions?\b', article_text, re.IGNORECASE)
+    has_information = re.search(r'\bInformation\b', article_text, re.IGNORECASE)
+    if has_instructions or has_information:
+        rules.append({"rule": "Instructions or Information section present", "status": "✅ Followed",
+                      "explanation": "Article contains an Instructions or Information section."})
+    else:
+        rules.append({"rule": "Instructions or Information section present", "status": "⚠️ Warning",
+                      "explanation": "Missing both Instructions and Information sections. Add one per article structure."})
+
+    # ----- 58. Keywords: avoid overly generic terms -----
+    generic_terms = {
+        'process', 'system', 'application', 'service', 'request', 'management',
+        'data', 'report', 'tool', 'platform', 'portal', 'support', 'help', 'guide',
+        'information', 'user', 'employee', 'manager', 'access', 'form', 'policy'
+    }
+    generic_found = []
+    if kw_list:
+        for kw in kw_list:
+            kw_stripped = kw.strip().lower()
+            if kw_stripped in generic_terms:
+                generic_found.append(kw_stripped)
+        if generic_found:
+            rules.append({"rule": "Keywords: avoid generic terms", "status": "⚠️ Warning",
+                          "explanation": f"Generic keyword(s) found: {', '.join(generic_found[:5])}. Use specific, descriptive keywords."})
+        else:
+            rules.append({"rule": "Keywords: avoid generic terms", "status": "✅ Followed",
+                          "explanation": "No generic keywords detected."})
+    else:
+        rules.append({"rule": "Keywords: avoid generic terms", "status": "⚠️ Undetermined",
+                      "explanation": "Keywords section missing."})
+
+    # ----- 59. Bulleted list used for informative content (optional) -----
+    bullet_lines = [l for l in article_text.splitlines() if re.match(r'^\s*[\-\*•]\s+', l)]
+    if not bullet_lines and len(re.findall(r'\bnote\b|\binfo\b', text_lower)) > 3:
+        rules.append({"rule": "Bulleted list present for informative content", "status": "⚠️ Info",
+                      "explanation": "Article may benefit from bulleted lists for readability."})
+    else:
+        rules.append({"rule": "Bulleted list present for informative content", "status": "✅ Followed",
+                      "explanation": "Bulleted lists are used appropriately or not needed."})
 
     return rules
