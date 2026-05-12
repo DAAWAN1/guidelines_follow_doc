@@ -38,6 +38,7 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
     # ----- 3. HEADING LEVELS -----
     heading2_used = re.search(r"Heading 2|Heading\s*2", article_text, re.IGNORECASE)
     heading1_used = re.search(r"Heading 1|Heading\s*1", article_text, re.IGNORECASE)
+    heading3_used = re.search(r"Heading 3|Heading\s*3", article_text, re.IGNORECASE)
     if heading2_used and not heading1_used:
         rules.append({"rule": "Heading levels: Heading 2 is default", "status": "✅ Followed",
                       "explanation": "Article uses Heading 2 as main level (no Heading 1)."})
@@ -123,6 +124,7 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
     else:
         rules.append({"rule": "Keywords (30 semicolon‑separated)", "status": "❌ Violated",
                       "explanation": "No Keywords section found."})
+        kw_list = []
 
     # ----- 10. Hyperlinks blue & underlined -----
     if "blue" in text_lower and "underline" in text_lower:
@@ -340,7 +342,7 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
                       "explanation": "Not mentioned; use Shift+Enter to add new lines inside callouts."})
 
     # =====================================================================
-    # NEW CHECKS based on the two additional documents
+    # NEW CHECKS from provided documents (31-37)
     # =====================================================================
 
     # ----- 31. Title length -----
@@ -376,12 +378,9 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
     # ----- 33. Hyperlink text is descriptive (not a bare URL) -----
     bare_url_found = False
     for line in article_text.splitlines():
-        # Find all URLs in the line
         urls = re.findall(r'https?://\S+', line)
         for url in urls:
-            # Remove the URL and see what remains
             remaining = line.replace(url, '', 1).strip()
-            # If remaining is very short (just a few chars like "Link:") it's likely a bare URL
             if len(remaining) <= 10:
                 bare_url_found = True
                 break
@@ -394,7 +393,7 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
         rules.append({"rule": "Hyperlink text is descriptive (not bare URL)", "status": "✅ Followed",
                       "explanation": "No bare URLs detected."})
 
-    # ----- 34. Accordions should not hide critical information -----
+    # ----- 34. Avoid using accordions for important content -----
     if re.search(r'accordion', article_text, re.IGNORECASE):
         rules.append({"rule": "Avoid using accordions for important content", "status": "⚠️ Warning",
                       "explanation": "Accordions can impair accessibility and printing. Ensure critical info is not collapsed."})
@@ -405,39 +404,34 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
     # ----- 35. Bullets use standard characters -----
     ACCEPTABLE_BULLETS = {
         '-', '*', '•', '◦', '▪', '▸', '▹', '‣', '⁃', '➢', '–', '—', '▪', '❖', '❑', '❒',
-        '✓', '✔'  # checkmarks are sometimes used but allowed? Common checkmarks are okay for accessibility.
+        '✓', '✔'
     }
-    # We'll flag bullets that are unusual symbols
     non_standard_found = False
     for line in article_text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        # Check if line starts with a non-alphanumeric, non-space character followed by a space
         m = re.match(r'^(\S)(?:\s)', stripped)
         if m:
             first_char = m.group(1)
-            # If it's an ASCII letter/digit we ignore
             if first_char.isalnum():
                 continue
-            # If the first char is not in the acceptable set, flag it
             if first_char not in ACCEPTABLE_BULLETS:
                 non_standard_found = True
                 break
     if non_standard_found:
         rules.append({"rule": "Bullets use standard characters", "status": "⚠️ Warning",
-                      "explanation": "Found non‑standard bullet characters (e.g., arrows, emojis). Use plain dashes or standard bullets."})
+                      "explanation": "Found non‑standard bullet characters. Use plain dashes or standard bullets."})
     else:
         rules.append({"rule": "Bullets use standard characters", "status": "✅ Followed",
                       "explanation": "Bullets appear standard."})
 
-    # ----- 36. Avoid all‑caps text (except short acronyms) -----
+    # ----- 36. Avoid all‑caps text -----
     all_caps_lines = 0
     for line in article_text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.isdigit():
             continue
-        # Check if line is entirely uppercase and longer than 10 chars (to ignore short acronyms)
         if stripped.isupper() and len(stripped) > 10:
             all_caps_lines += 1
     if all_caps_lines > 3:
@@ -447,14 +441,149 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
         rules.append({"rule": "Avoid all‑caps text", "status": "✅ Followed",
                       "explanation": "No excessive all‑caps text."})
 
-    # ----- 37. Heading nesting is logical (no skipped levels) -----
-    h3_used = re.search(r'Heading\s*3', article_text, re.IGNORECASE)
-    h2_used = heading2_used  # already computed earlier
-    if h3_used and not h2_used:
+    # ----- 37. Heading nesting: no skipped levels -----
+    if heading3_used and not heading2_used:
         rules.append({"rule": "Heading nesting: no skipped levels", "status": "❌ Violated",
-                      "explanation": "Heading 3 used without a preceding Heading 2. Use hierarchical heading levels."})
+                      "explanation": "Heading 3 used without Heading 2. Maintain logical hierarchy."})
     else:
         rules.append({"rule": "Heading nesting: no skipped levels", "status": "✅ Followed",
                       "explanation": "Heading levels appear correctly nested."})
+
+    # =====================================================================
+    # ADDITIONAL CHECKS (38-45) based on both documents
+    # =====================================================================
+
+    # ----- 38. Keywords contain no country / site names -----
+    country_names = {
+        'afghanistan', 'albania', 'algeria', 'andorra', 'angola', 'argentina', 'armenia', 'australia',
+        'austria', 'azerbaijan', 'bahamas', 'bahrain', 'bangladesh', 'barbados', 'belarus', 'belgium',
+        'belize', 'benin', 'bhutan', 'bolivia', 'bosnia', 'botswana', 'brazil', 'brunei', 'bulgaria',
+        'burkina faso', 'burundi', 'cambodia', 'cameroon', 'canada', 'cape verde', 'chad', 'chile',
+        'china', 'colombia', 'comoros', 'congo', 'costa rica', 'croatia', 'cuba', 'cyprus', 'czechia',
+        'denmark', 'djibouti', 'dominica', 'dominican republic', 'ecuador', 'egypt', 'el salvador',
+        'equatorial guinea', 'eritrea', 'estonia', 'eswatini', 'ethiopia', 'fiji', 'finland', 'france',
+        'gabon', 'gambia', 'georgia', 'germany', 'ghana', 'greece', 'grenada', 'guatemala', 'guinea',
+        'guinea-bissau', 'guyana', 'haiti', 'honduras', 'hungary', 'iceland', 'india', 'indonesia',
+        'iran', 'iraq', 'ireland', 'israel', 'italy', 'jamaica', 'japan', 'jordan', 'kazakhstan', 'kenya',
+        'kiribati', 'korea', 'kosovo', 'kuwait', 'kyrgyzstan', 'laos', 'latvia', 'lebanon', 'lesotho',
+        'liberia', 'libya', 'liechtenstein', 'lithuania', 'luxembourg', 'madagascar', 'malawi', 'malaysia',
+        'maldives', 'mali', 'malta', 'marshall islands', 'mauritania', 'mauritius', 'mexico', 'micronesia',
+        'moldova', 'monaco', 'mongolia', 'montenegro', 'morocco', 'mozambique', 'myanmar', 'namibia',
+        'nauru', 'nepal', 'netherlands', 'new zealand', 'nicaragua', 'niger', 'nigeria', 'north macedonia',
+        'norway', 'oman', 'pakistan', 'palau', 'palestine', 'panama', 'papua new guinea', 'paraguay',
+        'peru', 'philippines', 'poland', 'portugal', 'qatar', 'romania', 'russia', 'rwanda',
+        'saint kitts', 'saint lucia', 'saint vincent', 'samoa', 'san marino', 'sao tome', 'saudi arabia',
+        'senegal', 'serbia', 'seychelles', 'sierra leone', 'singapore', 'slovakia', 'slovenia',
+        'solomon islands', 'somalia', 'south africa', 'south sudan', 'spain', 'sri lanka', 'sudan',
+        'suriname', 'sweden', 'switzerland', 'syria', 'taiwan', 'tajikistan', 'tanzania', 'thailand',
+        'timor-leste', 'togo', 'tonga', 'trinidad and tobago', 'tunisia', 'turkey', 'turkmenistan',
+        'tuvalu', 'uganda', 'ukraine', 'united arab emirates', 'united kingdom', 'usa', 'united states',
+        'uruguay', 'uzbekistan', 'vanuatu', 'vatican', 'venezuela', 'vietnam', 'yemen', 'zambia', 'zimbabwe'
+    }
+    country_in_keywords = False
+    if kw_list:
+        for kw in kw_list:
+            kw_stripped = kw.strip().lower()
+            if kw_stripped in country_names:
+                country_in_keywords = True
+                break
+    if country_in_keywords:
+        rules.append({"rule": "Keywords: no country/site names", "status": "❌ Violated",
+                      "explanation": "One or more keywords are country names. Remove them."})
+    else:
+        # If no keywords list at all we already reported violation; else it's followed
+        if kw_list:
+            rules.append({"rule": "Keywords: no country/site names", "status": "✅ Followed",
+                          "explanation": "No country names found in keywords."})
+        else:
+            rules.append({"rule": "Keywords: no country/site names", "status": "⚠️ Undetermined",
+                          "explanation": "Keywords section missing or unparseable."})
+
+    # ----- 39. Acronyms defined on first use -----
+    # Find potential acronyms (UPPERCASE words of 2+ chars)
+    acronym_candidates = re.findall(r'\b([A-Z]{2,}(?:\.[A-Z])?)\b', article_text)  # allows U.S. like?
+    acronym_candidates = [a for a in acronym_candidates if len(a) >= 2 and a not in {'US', 'UK', 'EU', 'GSK', 'IT', 'HR', 'AI', 'OK', 'PDF', 'URL'}]
+    undefined_acronyms = []
+    for acro in acronym_candidates:
+        # look for definition pattern: either "acro (definition)" or "definition (acro)"
+        # search in surrounding text (simple approach: whole article)
+        def_pattern = re.compile(r'\b' + re.escape(acro) + r'\s*\(([^)]+)\)|\(([^)]+)\)\s*' + re.escape(acro), re.IGNORECASE)
+        if not def_pattern.search(article_text):
+            undefined_acronyms.append(acro)
+    if undefined_acronyms:
+        rules.append({"rule": "Acronyms are defined on first use", "status": "⚠️ Warning",
+                      "explanation": f"Found undefined acronyms: {', '.join(undefined_acronyms[:5])}. Spell out the first time they appear."})
+    else:
+        rules.append({"rule": "Acronyms are defined on first use", "status": "✅ Followed",
+                      "explanation": "All detected acronyms appear to be defined."})
+
+    # ----- 40. Video: Captions provided -----
+    if "video" in text_lower:
+        if re.search(r'captions?|subtitles?', article_text, re.IGNORECASE):
+            rules.append({"rule": "Video captions provided", "status": "✅ Followed",
+                          "explanation": "Mentions captions/subtitles for video."})
+        else:
+            rules.append({"rule": "Video captions provided", "status": "❌ Violated",
+                          "explanation": "Video present but no mention of captions."})
+    else:
+        rules.append({"rule": "Video captions provided", "status": "⚠️ Not applicable",
+                      "explanation": "No video mentioned in the article."})
+
+    # ----- 41. Video: Autoplay disabled -----
+    if "video" in text_lower:
+        if re.search(r'do not autoplay|no autoplay|click to play|manually play', article_text, re.IGNORECASE):
+            rules.append({"rule": "Video does not autoplay", "status": "✅ Followed",
+                          "explanation": "Autoplay explicitly disabled."})
+        else:
+            rules.append({"rule": "Video does not autoplay", "status": "❌ Violated",
+                          "explanation": "Video should not autoplay; no explicit statement found."})
+    else:
+        rules.append({"rule": "Video does not autoplay", "status": "⚠️ Not applicable",
+                      "explanation": "No video mentioned."})
+
+    # ----- 42. Hashtags use CamelCase (#InitialCaps) -----
+    hashtags = re.findall(r'#(\w+)', article_text)
+    non_camel = []
+    for tag in hashtags:
+        # CamelCase means at least one uppercase letter after a lowercase
+        if not re.search(r'[a-z][A-Z]', tag) and tag.islower():
+            non_camel.append(f'#{tag}')
+    if non_camel:
+        rules.append({"rule": "Hashtags use CamelCase (#LikeThis)", "status": "❌ Violated",
+                      "explanation": f"Non‑CamelCase hashtags: {', '.join(non_camel[:5])}. Capitalize each word."})
+    else:
+        rules.append({"rule": "Hashtags use CamelCase (#LikeThis)", "status": "✅ Followed",
+                      "explanation": "All hashtags are CamelCase or not present."})
+
+    # ----- 43. Links requiring sign‑in include note -----
+    # Check if any URL is in the text and the phrase "requires sign in" appears somewhere
+    has_url = bool(re.search(r'https?://', article_text))
+    has_signin_note = bool(re.search(r'requires sign[-\s]in to access', article_text, re.IGNORECASE))
+    if has_url:
+        if has_signin_note:
+            rules.append({"rule": "Links requiring sign‑in include note", "status": "✅ Followed",
+                          "explanation": "Sign‑in disclaimer present near links."})
+        else:
+            rules.append({"rule": "Links requiring sign‑in include note", "status": "⚠️ Warning",
+                          "explanation": "If any link requires sign‑in, add '(requires sign in to access)'."})
+    else:
+        rules.append({"rule": "Links requiring sign‑in include note", "status": "⚠️ Not applicable",
+                      "explanation": "No hyperlinks detected in the article."})
+
+    # ----- 44. Alternative formats statement -----
+    if re.search(r'alternative formats?|available on request|accessible formats?', article_text, re.IGNORECASE):
+        rules.append({"rule": "Alternative formats offered", "status": "✅ Followed",
+                      "explanation": "Statement about alternative formats found."})
+    else:
+        rules.append({"rule": "Alternative formats offered", "status": "⚠️ Warning",
+                      "explanation": "Consider adding a note that alternative formats are available on request."})
+
+    # ----- 45. Body text uses Paragraph style -----
+    if re.search(r'Paragraph\s*(style|format)', article_text, re.IGNORECASE):
+        rules.append({"rule": "Body text uses Paragraph style", "status": "✅ Followed",
+                      "explanation": "Paragraph style mentioned for body text."})
+    else:
+        rules.append({"rule": "Body text uses Paragraph style", "status": "⚠️ Warning",
+                      "explanation": "Not explicitly stated; ensure body text uses the 'Paragraph' style."})
 
     return rules

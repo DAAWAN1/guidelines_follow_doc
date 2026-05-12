@@ -78,7 +78,7 @@ if file_names:
             st.session_state.selected_file = file
 else:
     st.sidebar.markdown(
-        f'<div style="background-color: #A9A9A9; color: black; padding: 15px; '
+        f'<div style="background-color: #C4C4C4; color: black; padding: 15px; '
         f'border-radius: 4px; margin-top: 10px;">'
         f'No documents uploaded yet.'
         f'</div>',
@@ -136,22 +136,60 @@ if selected_file and selected_file in st.session_state.processed_files:
                         st.write(r["explanation"])
             else:
                 st.info("No violations – excellent!")
-
-        st.write("### Summary")
+        # Summary (displayed on screen) -----------------------------------------------
+        st.subheader("Summary")
         client = load_inference_client()
         summary = generate_summary_from_results(results, client)
+
+        # Helper: convert a simple markdown string with bullet lists to HTML
+        def simple_md_to_html(text: str) -> str:
+            lines = text.split('\n')
+            html_parts = []
+            in_list = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith('- '):
+                    if not in_list:
+                        html_parts.append('<ul>')
+                        in_list = True
+                    html_parts.append(f'<li>{stripped[2:]}</li>')
+                else:
+                    if in_list:
+                        html_parts.append('</ul>')
+                        in_list = False
+                    if stripped:
+                        html_parts.append(f'<p>{stripped}</p>')
+            if in_list:
+                html_parts.append('</ul>')
+            return ''.join(html_parts)
+
+        summary_html = simple_md_to_html(summary)
+
         st.markdown(
-            f'<div style="background-color: #f0f2f6; color: black; padding: 15px; border-radius: 4px; margin-top: 10px;">'
-            f'{html.escape(summary)}'
-            f'</div>',
+            f"""<div style="background-color: #f0f2f6; color: black; padding: 20px;
+            border-radius: 4px; margin-top: 10px;">
+            {summary_html}
+            </div>""",
             unsafe_allow_html=True
         )
 
-        report_text = "\n\n".join(
-            f"{r['status']} {r['rule']}\n{r['explanation']}" for r in results
-        )
+        # Build downloadable report text
+        report_parts = []
+        report_parts.append("=== COMPLIANCE SUMMARY ===")
+        report_parts.append(summary)
+        report_parts.append("\n=== DETAILED RESULTS ===\n")
+
+        # Add all individual checks
+        for r in results:
+            report_parts.append(f"{r['status']} {r['rule']}")
+            report_parts.append(f"   {r['explanation']}")
+            report_parts.append("")   # blank line
+
+        report_text = "\n".join(report_parts)
+
+        # Download button
         st.download_button(
-            f"Download Report",
+            label="Download Report",
             data=report_text,
             file_name=f"compliance_report_{selected_file}.txt",
             mime="text/plain",
