@@ -339,4 +339,122 @@ def check_article_compliance(article_text: str, has_images: bool) -> list:
         rules.append({"rule": "Callout line breaks use Shift+Enter", "status": "⚠️ Info",
                       "explanation": "Not mentioned; use Shift+Enter to add new lines inside callouts."})
 
+    # =====================================================================
+    # NEW CHECKS based on the two additional documents
+    # =====================================================================
+
+    # ----- 31. Title length -----
+    title = None
+    title_match = re.search(r'^Title:\s*(.+)', article_text, re.MULTILINE | re.IGNORECASE)
+    if title_match:
+        title = title_match.group(1).strip()
+    if not title:
+        for line in article_text.splitlines():
+            stripped = line.strip()
+            if stripped and not re.match(r'^(SECTION|##|\[\[|\{|\[|\|)', stripped):
+                title = stripped
+                break
+    if title:
+        if len(title) <= 120:
+            rules.append({"rule": "Article title is within 120 characters", "status": "✅ Followed",
+                          "explanation": f"Title length: {len(title)} characters."})
+        else:
+            rules.append({"rule": "Article title is within 120 characters", "status": "❌ Violated",
+                          "explanation": f"Title is {len(title)} characters – exceed maximum of 120."})
+    else:
+        rules.append({"rule": "Article title is within 120 characters", "status": "⚠️ Undetermined",
+                      "explanation": "Could not extract article title."})
+
+    # ----- 32. Content is not in FAQ format -----
+    if re.search(r'\b(FAQ|Frequently\s+Asked\s+Questions)\b', article_text, re.IGNORECASE):
+        rules.append({"rule": "Content is not in FAQ format", "status": "❌ Violated",
+                      "explanation": "Articles should not be in FAQ style. Use structured sections instead."})
+    else:
+        rules.append({"rule": "Content is not in FAQ format", "status": "✅ Followed",
+                      "explanation": "No FAQ pattern detected."})
+
+    # ----- 33. Hyperlink text is descriptive (not a bare URL) -----
+    bare_url_found = False
+    for line in article_text.splitlines():
+        # Find all URLs in the line
+        urls = re.findall(r'https?://\S+', line)
+        for url in urls:
+            # Remove the URL and see what remains
+            remaining = line.replace(url, '', 1).strip()
+            # If remaining is very short (just a few chars like "Link:") it's likely a bare URL
+            if len(remaining) <= 10:
+                bare_url_found = True
+                break
+        if bare_url_found:
+            break
+    if bare_url_found:
+        rules.append({"rule": "Hyperlink text is descriptive (not bare URL)", "status": "❌ Violated",
+                      "explanation": "Found at least one hyperlink that is just a raw URL. Use a descriptive link name."})
+    else:
+        rules.append({"rule": "Hyperlink text is descriptive (not bare URL)", "status": "✅ Followed",
+                      "explanation": "No bare URLs detected."})
+
+    # ----- 34. Accordions should not hide critical information -----
+    if re.search(r'accordion', article_text, re.IGNORECASE):
+        rules.append({"rule": "Avoid using accordions for important content", "status": "⚠️ Warning",
+                      "explanation": "Accordions can impair accessibility and printing. Ensure critical info is not collapsed."})
+    else:
+        rules.append({"rule": "Avoid using accordions for important content", "status": "✅ Followed",
+                      "explanation": "No accordions mentioned."})
+
+    # ----- 35. Bullets use standard characters -----
+    ACCEPTABLE_BULLETS = {
+        '-', '*', '•', '◦', '▪', '▸', '▹', '‣', '⁃', '➢', '–', '—', '▪', '❖', '❑', '❒',
+        '✓', '✔'  # checkmarks are sometimes used but allowed? Common checkmarks are okay for accessibility.
+    }
+    # We'll flag bullets that are unusual symbols
+    non_standard_found = False
+    for line in article_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Check if line starts with a non-alphanumeric, non-space character followed by a space
+        m = re.match(r'^(\S)(?:\s)', stripped)
+        if m:
+            first_char = m.group(1)
+            # If it's an ASCII letter/digit we ignore
+            if first_char.isalnum():
+                continue
+            # If the first char is not in the acceptable set, flag it
+            if first_char not in ACCEPTABLE_BULLETS:
+                non_standard_found = True
+                break
+    if non_standard_found:
+        rules.append({"rule": "Bullets use standard characters", "status": "⚠️ Warning",
+                      "explanation": "Found non‑standard bullet characters (e.g., arrows, emojis). Use plain dashes or standard bullets."})
+    else:
+        rules.append({"rule": "Bullets use standard characters", "status": "✅ Followed",
+                      "explanation": "Bullets appear standard."})
+
+    # ----- 36. Avoid all‑caps text (except short acronyms) -----
+    all_caps_lines = 0
+    for line in article_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.isdigit():
+            continue
+        # Check if line is entirely uppercase and longer than 10 chars (to ignore short acronyms)
+        if stripped.isupper() and len(stripped) > 10:
+            all_caps_lines += 1
+    if all_caps_lines > 3:
+        rules.append({"rule": "Avoid all‑caps text", "status": "⚠️ Warning",
+                      "explanation": f"Found {all_caps_lines} lines of all‑uppercase text. Use sentence case for readability."})
+    else:
+        rules.append({"rule": "Avoid all‑caps text", "status": "✅ Followed",
+                      "explanation": "No excessive all‑caps text."})
+
+    # ----- 37. Heading nesting is logical (no skipped levels) -----
+    h3_used = re.search(r'Heading\s*3', article_text, re.IGNORECASE)
+    h2_used = heading2_used  # already computed earlier
+    if h3_used and not h2_used:
+        rules.append({"rule": "Heading nesting: no skipped levels", "status": "❌ Violated",
+                      "explanation": "Heading 3 used without a preceding Heading 2. Use hierarchical heading levels."})
+    else:
+        rules.append({"rule": "Heading nesting: no skipped levels", "status": "✅ Followed",
+                      "explanation": "Heading levels appear correctly nested."})
+
     return rules
