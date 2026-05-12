@@ -1,0 +1,1 @@
+from .checks import check_article_compliance
