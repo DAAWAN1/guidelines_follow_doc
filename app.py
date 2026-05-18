@@ -2,9 +2,9 @@ import streamlit as st
 import html
 from config import init_config
 from utils import shorten_filename
-from extraction import extract_text_and_images
 from compliance import check_article_compliance
 from summary import load_inference_client, generate_summary_from_results
+from extraction import extract_text, extract_rich_docx_data
 
 # ------------------------------------------------------------------
 # Initialize app config (env, CSS, page settings)
@@ -43,12 +43,28 @@ if uploaded_files:
     for file in uploaded_files:
         if file.name not in st.session_state.processed_files or True:
             with st.spinner(f"Processing {file.name}..."):
-                text, img_count = extract_text_and_images(file)
-                st.session_state.processed_files[file.name] = {
-                    "text": text,
-                    "image_count": img_count,
-                    "results": None
-                }
+                # Determine file type
+                is_docx = file.name.lower().endswith('.docx')
+                
+                if is_docx:
+                    # Extract rich formatting data
+                    rich_data = extract_rich_docx_data(file)
+                    # Plain text is taken from the rich data (we added 'full_text')
+                    text = rich_data.get("full_text", "")
+                    # Store both
+                    st.session_state.processed_files[file.name] = {
+                        "text": text,
+                        "rich_data": rich_data,   # <-- new key
+                        "results": None
+                    }
+                else:
+                    # PDF: only plain text available
+                    text = extract_text(file)
+                    st.session_state.processed_files[file.name] = {
+                        "text": text,
+                        "rich_data": None,        # <-- no rich data for PDF
+                        "results": None
+                    }
 
 file_names = list(st.session_state.processed_files.keys())
 if file_names and (st.session_state.selected_file is None or st.session_state.selected_file not in file_names):
@@ -89,7 +105,6 @@ else:
 if selected_file and selected_file in st.session_state.processed_files:
     file_data = st.session_state.processed_files[selected_file]
     article_text = file_data["text"]
-    image_count = file_data["image_count"]
 
     if not article_text.strip():
         st.error(f"No text could be extracted from {selected_file}. Please check the file.")
@@ -98,7 +113,8 @@ if selected_file and selected_file in st.session_state.processed_files:
 
         if file_data["results"] is None:
             with st.spinner("Running all rule checks..."):
-                results = check_article_compliance(article_text, has_images=(image_count > 0))
+                rich_data = file_data.get("rich_data", None)
+                results = check_article_compliance(article_text, doc_data=rich_data)
             st.session_state.processed_files[selected_file]["results"] = results
         else:
             results = file_data["results"]

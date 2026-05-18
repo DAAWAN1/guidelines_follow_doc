@@ -1,774 +1,1032 @@
+"""
+compliance/checks.py
+====================
+GSK Document Intelligence – Accessibility & Inclusion Compliance Checks.
+
+All public check functions accept a `doc_data` dict (from
+extraction.extract_rich_docx_data) and/or a plain `text` string.
+
+Each function returns a list of result dicts:
+    {
+        "rule":        str,   – short rule name shown in the UI
+        "status":      str,   – one of STATUS_OK / STATUS_WARNING / STATUS_VIOLATED
+        "explanation": str,   – human-readable detail
+    }
+
+Call run_all_checks() to execute every check at once.
+"""
+
+from __future__ import annotations
 import re
-from article_cleaner import clean_article_text
-from readability import count_sentences
+from typing import Any
 
-def check_article_compliance(article_text: str, has_images: bool) -> list:
+# ---------------------------------------------------------------------------
+# Status labels (match whatever your existing UI expects)
+# ---------------------------------------------------------------------------
+STATUS_OK = "✅ OK"
+STATUS_WARNING = "⚠️ Warning"
+STATUS_VIOLATED = "❌ Violated"
+
+# ---------------------------------------------------------------------------
+# Sans-serif font set (must stay in sync with extraction.SANS_SERIF_FONTS)
+# ---------------------------------------------------------------------------
+SANS_SERIF_FONTS = {
+    "arial", "helvetica", "calibri", "verdana", "tahoma",
+    "trebuchet ms", "trebuchet", "franklin gothic", "gill sans",
+    "open sans", "lato", "roboto", "noto sans", "segoe ui",
+    "myriad pro", "futura", "century gothic", "optima",
+    "lucida sans", "lucida grande", "ubuntu", "fira sans",
+    "source sans pro", "nunito", "raleway", "poppins", "inter",
+    "avenir", "proxima nova", "gotham", "brandon grotesque",
+    "barlow", "dm sans", "work sans", "outfit",
+}
+
+# Bullet characters considered standard
+STANDARD_BULLET_CHARS = {"•", "◦", "▪", "▸", "–", "-", "*", "○", "●"}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _body_paragraphs(paragraphs: list[dict]) -> list[dict]:
+    """Return only non-heading, non-title paragraphs with real text."""
+    return [
+        p for p in paragraphs
+        if p["text"].strip()
+        and not p["is_heading"]
+        and not p["is_title"]
+        and not p["is_caption"]
+    ]
+
+
+def _all_runs(paragraphs: list[dict]) -> list[dict]:
+    """Flat list of all runs across all paragraphs."""
+    return [run for p in paragraphs for run in p["runs"]]
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
+def _is_url(text: str) -> bool:
+    return bool(re.match(r"https?://\S+|www\.\S+", text.strip(), re.IGNORECASE))
+
+
+# ---------------------------------------------------------------------------
+# 1. Text alignment
+# ---------------------------------------------------------------------------
+
+def check_text_alignment(doc_data: dict) -> list[dict]:
     """
-    Run all rule‑based checks against the article text.
-    has_images: True if PDF contains at least one embedded image.
-    Returns a list of dicts: {rule, status, explanation}
+    Rule: Body copy must be left-aligned.
+           Centred text is allowed only for headings/titles (used sparingly).
     """
-    rules = []
-    text_lower = article_text.lower()
-    cleaned_text = clean_article_text(article_text)
+    paragraphs = doc_data.get("paragraphs", [])
+    violations = []
+    for p in _body_paragraphs(paragraphs):
+        if p["alignment"] in ("right", "center"):
+            snippet = p["text"][:60].strip()
+            violations.append(f'"{snippet}…" is {p["alignment"]}-aligned')
 
-    # ----- 1. Mandatory feedback callout (QUESTION type) -----
-    target_phrase = (
-        "Did this article meet your needs? "
-        "Click Yes to let us know! If No, please share what's missing so we can improve the content."
-    )
-    if target_phrase in article_text:
-        rules.append({"rule": "Feedback callout (QUESTION type)", "status": "✅ Followed",
-                      "explanation": "The mandatory feedback callout phrase is present."})
-    else:
-        rules.append({"rule": "Feedback callout (QUESTION type)", "status": "❌ Violated",
-                      "explanation": "Exact phrase not found. Must appear at end of article."})
+    if not violations:
+        return [{"rule": "Text Alignment", "status": STATUS_OK,
+                 "explanation": "All body copy is left- or justify-aligned."}]
 
-    # ----- 2. Table header orange background + bold white text -----
-    if re.search(r"orange\s*background.*bold\s*white", article_text, re.IGNORECASE):
-        rules.append({"rule": "Table header: orange background + bold white text", "status": "✅ Followed",
-                      "explanation": "Matches guideline (#F36633)."})
-    elif re.search(r"grey tint|no colour background|dark\s*text", article_text, re.IGNORECASE):
-        rules.append({"rule": "Table header: orange background + bold white text", "status": "❌ Violated",
-                      "explanation": "Header uses grey/dark text, not orange background."})
-    else:
-        rules.append({"rule": "Table header: orange background + bold white text", "status": "⚠️ Undetermined",
-                      "explanation": "Could not verify header styling."})
+    return [{"rule": "Text Alignment", "status": STATUS_VIOLATED,
+             "explanation": (
+                 f"Body text must be left-aligned. "
+                 f"Found {len(violations)} non-left paragraph(s):\n"
+                 + "\n".join(f"  • {v}" for v in violations[:5])
+                 + ("\n  …and more." if len(violations) > 5 else "")
+             )}]
 
-    # ----- 3. HEADING LEVELS -----
-    heading2_used = re.search(r"Heading 2|Heading\s*2", article_text, re.IGNORECASE)
-    heading1_used = re.search(r"Heading 1|Heading\s*1", article_text, re.IGNORECASE)
-    heading3_used = re.search(r"Heading 3|Heading\s*3", article_text, re.IGNORECASE)
-    if heading2_used and not heading1_used:
-        rules.append({"rule": "Heading levels: Heading 2 is default", "status": "✅ Followed",
-                      "explanation": "Article uses Heading 2 as main level (no Heading 1)."})
-    elif heading1_used and not heading2_used:
-        rules.append({"rule": "Heading levels: Heading 2 is default", "status": "❌ Violated",
-                      "explanation": "Heading 1 is used but Heading 2 is missing. Use Heading 2 for main sections."})
-    elif heading1_used and heading2_used:
-        rules.append({"rule": "Heading levels: Heading 2 is default", "status": "⚠️ Warning",
-                      "explanation": "Both Heading 1 and Heading 2 present. Ensure Heading 1 is only for very large sections."})
-    else:
-        rules.append({"rule": "Heading levels: Heading 2 is default", "status": "⚠️ Undetermined",
-                      "explanation": "No heading level mentioned in article text."})
 
-    # Avoid generic headings
-    if re.search(r"Heading.*?Introduction|^Introduction$", article_text, re.MULTILINE):
-        rules.append({"rule": "Headings are descriptive (avoid 'Introduction')", "status": "❌ Violated",
-                      "explanation": "Found generic heading 'Introduction'. Use specific titles like 'What is X?'"})
-    else:
-        rules.append({"rule": "Headings are descriptive (avoid 'Introduction')", "status": "✅ Followed",
-                      "explanation": "No generic headings detected."})
+# ---------------------------------------------------------------------------
+# 2. Headings / titles / captions – no ALL CAPS, no italics
+# ---------------------------------------------------------------------------
 
-    # No numbers in headings
-    if re.search(r"^\d+\.\s+\w+", article_text, re.MULTILINE):
-        rules.append({"rule": "Headings have no numbers", "status": "❌ Violated",
-                      "explanation": "Numbered headings found (e.g., '1. Section'). Remove numbers."})
-    else:
-        rules.append({"rule": "Headings have no numbers", "status": "✅ Followed",
-                      "explanation": "No numbered headings."})
+def check_heading_formatting(doc_data: dict) -> list[dict]:
+    paragraphs = doc_data.get("paragraphs", [])
+    bad = []
 
-    # ----- 4. Description section -----
-    if re.search(r"Description.*?\n", article_text) and "This Knowledge Article" in article_text:
-        rules.append({"rule": "Article contains a Description section", "status": "✅ Followed",
-                      "explanation": "Starts with 'This Knowledge Article...'"})
-    else:
-        rules.append({"rule": "Article contains a Description section", "status": "❌ Violated",
-                      "explanation": "Missing Description section."})
-
-    # ----- 5. Audience section -----
-    if re.search(r"\bAudience\s*[:|]?\b", article_text, re.IGNORECASE):
-        rules.append({"rule": "Audience section present", "status": "✅ Followed",
-                      "explanation": "Clearly states intended audience."})
-    else:
-        rules.append({"rule": "Audience section present", "status": "❌ Violated",
-                      "explanation": "Every article must define its audience."})
-
-    # ----- 6. Prerequisites / "Access to" -----
-    if re.search(r"Prerequisites?\s*[:|]?|\bAccess to\b", article_text, re.IGNORECASE):
-        rules.append({"rule": "Prerequisites / 'Access to' section", "status": "✅ Followed",
-                      "explanation": "Lists required access or prep."})
-    else:
-        rules.append({"rule": "Prerequisites / 'Access to' section", "status": "⚠️ Warning",
-                      "explanation": "Not explicitly mentioned. Recommended for instructional articles."})
-
-    # ----- 7. Instructions use numbered list -----
-    if re.search(r"\d+\.\s+\w+", article_text) and "numbered list" in text_lower:
-        rules.append({"rule": "Instructions use numbered list", "status": "✅ Followed",
-                      "explanation": "Numbered steps detected."})
-    elif re.search(r"\d+\.\s+\w+", article_text):
-        rules.append({"rule": "Instructions use numbered list", "status": "✅ Followed",
-                      "explanation": "Numbered steps present."})
-    else:
-        rules.append({"rule": "Instructions use numbered list", "status": "⚠️ Undetermined",
-                      "explanation": "No numbered steps found; if tutorial, use numbered list."})
-
-    # ----- 8. Contacts for Further Help -----
-    if re.search(r"Contacts? for Further Help", article_text, re.IGNORECASE):
-        rules.append({"rule": "Contacts for Further Help section", "status": "✅ Followed", "explanation": "Present."})
-    else:
-        rules.append({"rule": "Contacts for Further Help section", "status": "❌ Violated",
-                      "explanation": "Mandatory section missing."})
-
-    # ----- 9. Keywords -----
-    keywords_match = re.search(r"Keywords\s*[:|]\s*([^;]+(?:;\s*[^;]+)+)", article_text, re.IGNORECASE)
-    if keywords_match:
-        kw_text = keywords_match.group(1)
-        kw_list = re.split(r';\s*', kw_text)
-        if len(kw_list) >= 30:
-            rules.append({"rule": "Keywords (30 semicolon‑separated)", "status": "✅ Followed",
-                          "explanation": f"Found {len(kw_list)} keywords."})
-        else:
-            rules.append({"rule": "Keywords (30 semicolon‑separated)", "status": "❌ Violated",
-                          "explanation": f"Only {len(kw_list)} keywords, need 30."})
-    else:
-        rules.append({"rule": "Keywords (30 semicolon‑separated)", "status": "❌ Violated",
-                      "explanation": "No Keywords section found."})
-        kw_list = []
-
-    # ----- 10. Hyperlinks blue & underlined -----
-    if "blue" in text_lower and "underline" in text_lower:
-        rules.append({"rule": "Hyperlinks are blue and underlined", "status": "✅ Followed",
-                      "explanation": "Matches system default."})
-    else:
-        rules.append({"rule": "Hyperlinks are blue and underlined", "status": "⚠️ Undetermined",
-                      "explanation": "Not explicitly stated."})
-
-    # ----- 11. Copy Link button -----
-    if "Copy Link" in article_text:
-        rules.append({"rule": "Copy Link button visible", "status": "✅ Followed", "explanation": "Mentioned."})
-    else:
-        rules.append({"rule": "Copy Link button visible", "status": "❌ Violated",
-                      "explanation": "Must instruct to use Copy Link button."})
-
-    # ----- 12. Table cell text uses Paragraph style -----
-    if re.search(r"Paragraph.*style.*table|table.*Paragraph.*style", article_text, re.IGNORECASE):
-        rules.append({"rule": "Table cell text uses Paragraph style", "status": "✅ Followed",
-                      "explanation": "Not Heading."})
-    else:
-        rules.append({"rule": "Table cell text uses Paragraph style", "status": "⚠️ Warning",
-                      "explanation": "Not clearly described; ensure table cells use Paragraph."})
-
-    # ----- 13. Table: no copying from external sources -----
-    if re.search(r"do not copy a table|paste as plain text|clear formatting", article_text, re.IGNORECASE):
-        rules.append({"rule": "Table not copied from external sources", "status": "✅ Followed",
-                      "explanation": "Guideline followed."})
-    else:
-        rules.append({"rule": "Table not copied from external sources", "status": "⚠️ Warning",
-                      "explanation": "No mention of avoiding paste from Word/PDF."})
-
-    # ----- 14. Table not imported as image -----
-    if re.search(r"do not import.*table.*image", article_text, re.IGNORECASE):
-        rules.append({"rule": "Table not imported as image", "status": "✅ Followed",
-                      "explanation": "Explicitly avoided."})
-    else:
-        rules.append({"rule": "Table not imported as image", "status": "⚠️ Warning",
-                      "explanation": "No statement; ensure table is real HTML table."})
-
-    # ----- 15. Table Type 2: alternating row background -----
-    if re.search(r"alternating.*row|#FAE2D5|light orange.*background", article_text, re.IGNORECASE):
-        rules.append({"rule": "Table Type 2: alternating row background (#FAE2D5)", "status": "✅ Followed",
-                      "explanation": "Alternating rows used."})
-    else:
-        rules.append({"rule": "Table Type 2: alternating row background (#FAE2D5)", "status": "⚠️ Undetermined",
-                      "explanation": "Not described; only needed if using comparative tables."})
-
-    # ----- 16. Table border colour -----
-    if re.search(r"#F1A983|border.*light orange", article_text, re.IGNORECASE):
-        rules.append({"rule": "Table Type 2 border colour (#F1A983)", "status": "✅ Followed",
-                      "explanation": "Correct border colour."})
-    else:
-        rules.append({"rule": "Table Type 2 border colour (#F1A983)", "status": "⚠️ Undetermined",
-                      "explanation": "Not specified."})
-
-    # ----- 17. Screenshot max width -----
-    if has_images:
-        if re.search(r"width.*850|max.*850px", article_text, re.IGNORECASE):
-            rules.append({"rule": "Screenshot max width 850px", "status": "✅ Followed",
-                          "explanation": "Width specified or implied."})
-        else:
-            rules.append({"rule": "Screenshot max width 850px", "status": "⚠️ Warning",
-                          "explanation": "Not mentioned; ensure images are ≤850px wide."})
-    else:
-        rules.append({"rule": "Screenshot max width 850px", "status": "⚠️ Not applicable",
-                      "explanation": "No embedded images detected in PDF."})
-
-    # ----- 18. Screenshots have alt text -----
-    if has_images:
-        if re.search(r"Alternative description|alt text", article_text, re.IGNORECASE):
-            rules.append({"rule": "Screenshots have alt text", "status": "✅ Followed",
-                          "explanation": "Alt text described."})
-        else:
-            rules.append({"rule": "Screenshots have alt text", "status": "❌ Violated",
-                          "explanation": "Every image must have alt text."})
-    else:
-        rules.append({"rule": "Screenshots have alt text", "status": "⚠️ Not applicable",
-                      "explanation": "No embedded images detected."})
-
-    # ----- 19. Screenshot annotations use GSK orange -----
-    if has_images:
-        if re.search(r"#f36633|orange.*annotation|GSK orange", article_text, re.IGNORECASE):
-            rules.append({"rule": "Screenshot annotations use GSK orange", "status": "✅ Followed",
-                          "explanation": "Matches brand colour."})
-        else:
-            rules.append({"rule": "Screenshot annotations use GSK orange", "status": "⚠️ Warning",
-                          "explanation": "No mention of annotation colour; use #f36633."})
-    else:
-        rules.append({"rule": "Screenshot annotations use GSK orange", "status": "⚠️ Not applicable",
-                      "explanation": "No embedded images detected."})
-
-    # ----- 20. Critical info not only in images -----
-    if re.search(r"text version|summary.*below|accessible to screen readers", article_text, re.IGNORECASE):
-        rules.append({"rule": "Critical info not only in images", "status": "✅ Followed",
-                      "explanation": "Provides text alternative."})
-    else:
-        rules.append({"rule": "Critical info not only in images", "status": "⚠️ Warning",
-                      "explanation": "No text alternative mentioned; ensure critical data is also in text."})
-
-    # ----- 21. Note formatting -----
-    note_format = re.search(r"Note:\s*\*\*?|bold.*Note:|Note:.*bold", article_text, re.IGNORECASE)
-    if note_format:
-        rules.append({"rule": "Note formatting: bold 'Note:' + Paragraph", "status": "✅ Followed",
-                      "explanation": "Correctly formatted."})
-    else:
-        rules.append({"rule": "Note formatting: bold 'Note:' + Paragraph", "status": "⚠️ Warning",
-                      "explanation": "Notes should have 'Note:' in bold, rest normal."})
-
-    # ----- 22. Attachment names contain no dates -----
-    if re.search(r"\b(19|20)\d{2}\b", article_text) and "attachment" in text_lower:
-        rules.append({"rule": "Attachment names contain no dates", "status": "❌ Violated",
-                      "explanation": "Found year number in attachment description."})
-    else:
-        rules.append({"rule": "Attachment names contain no dates", "status": "✅ Followed",
-                      "explanation": "No dates detected in attachment names."})
-
-    # ----- 23. Attachment name matches link text -----
-    if re.search(r"identical name|same name.*attachment.*link", article_text, re.IGNORECASE):
-        rules.append({"rule": "Attachment name matches link text", "status": "✅ Followed",
-                      "explanation": "Consistency mentioned."})
-    else:
-        rules.append({"rule": "Attachment name matches link text", "status": "⚠️ Warning",
-                      "explanation": "Ensure the linked text and file name are identical."})
-
-    # ----- 24. Attachments are supplementary -----
-    if re.search(r"must not serve as the primary source|complement the main content", article_text, re.IGNORECASE):
-        rules.append({"rule": "Attachments are supplementary, not primary", "status": "✅ Followed",
-                      "explanation": "Guideline followed."})
-    else:
-        rules.append({"rule": "Attachments are supplementary, not primary", "status": "⚠️ Warning",
-                      "explanation": "No statement; ensure article is self‑contained."})
-
-    # ----- 25. Plain language: short sentences -----
-    if cleaned_text:
-        sentence_count = count_sentences(cleaned_text)
-        total_words = len(cleaned_text.split())
-        if sentence_count > 0:
-            avg_len = total_words / sentence_count
-            if avg_len < 20:
-                rules.append({"rule": "Plain language: short sentences (average <20 words)", "status": "✅ Followed",
-                              "explanation": f"Average sentence length {avg_len:.1f} words (based on extracted article content)."})
-            else:
-                rules.append({"rule": "Plain language: short sentences (average <20 words)", "status": "❌ Violated",
-                              "explanation": f"Average {avg_len:.1f} words – too long (based on extracted article content)."})
-        else:
-            rules.append({"rule": "Plain language: short sentences", "status": "⚠️ Undetermined",
-                          "explanation": "Could not compute sentence count from article content."})
-    else:
-        rules.append({"rule": "Plain language: short sentences", "status": "⚠️ Undetermined",
-                      "explanation": "No clean article content found for readability analysis."})
-
-    # ----- 26. Active voice -----
-    if cleaned_text:
-        passive_patterns = r"\b(am|are|is|was|were|be|been|being)\s+(\w+ed|\w+en)\b"
-        passive_matches = len(re.findall(passive_patterns, cleaned_text, re.IGNORECASE))
-        if passive_matches < 5:
-            rules.append({"rule": "Plain language: active voice preferred", "status": "✅ Followed",
-                          "explanation": f"Only {passive_matches} passive constructions in article content."})
-        else:
-            rules.append({"rule": "Plain language: active voice preferred", "status": "⚠️ Warning",
-                          "explanation": f"{passive_matches} passive phrases found; rewrite to active where possible."})
-    else:
-        rules.append({"rule": "Plain language: active voice preferred", "status": "⚠️ Undetermined",
-                      "explanation": "No clean article content available."})
-
-    # ----- 27. Spacing -----
-    if re.search(r"(Heading 2|^#+\s+.*)\n\s*\n\s*\w", article_text, re.MULTILINE):
-        rules.append({"rule": "Spacing: no blank line after heading", "status": "❌ Violated",
-                      "explanation": "Blank line found after heading – should be no gap."})
-    else:
-        rules.append({"rule": "Spacing: no blank line after heading", "status": "✅ Followed",
-                      "explanation": "No incorrect spacing detected."})
-
-    if re.search(r"Section.*?\n\s*\n.*?Section", article_text, re.DOTALL | re.IGNORECASE):
-        rules.append({"rule": "Spacing: one blank line between sections", "status": "✅ Followed",
-                      "explanation": "Sections separated by blank line."})
-    else:
-        rules.append({"rule": "Spacing: one blank line between sections", "status": "⚠️ Warning",
-                      "explanation": "Not clearly separated; use one line of space."})
-
-    # ----- 28. AQI checklist -----
-    aqi_checks = {
-        "Is the article unique? (no duplicates)": r"\bunique\b|\bduplicate\b",
-        "Is the article accurate and relevant?": r"\baccurate\b|\brelevant\b|\bup to date\b",
-        "Is the article complete? (all steps, goal achieved)": r"\bcomplete\b|\ball steps\b",
-        "Is the title correct? (descriptive, concise)": r"\btitle.*descriptive\b|\bconcise title\b",
-        "Does it follow readability guidelines?": r"\breadability\b|\bplain language\b",
-        "Are the links valid?": r"\blinks.*valid\b|\bworking links\b",
-        "Are the user / security correct?": r"\buser criteria\b|\bcan read\b",
-        "Is the Knowledge Base & category accurate?": r"\bknowledge base\b|\bcategory\b",
-        "Has proper metadata been entered?": r"\bmetadata\b|\bkeywords\b|\bassignment group\b",
-        "Grammar / spelling checked?": r"\bgrammar\b|\bspelling\b"
-    }
-    for check, pattern in aqi_checks.items():
-        if re.search(pattern, article_text, re.IGNORECASE):
-            rules.append({"rule": f"AQI: {check}", "status": "✅ Followed", "explanation": "Mentioned."})
-        else:
-            rules.append({"rule": f"AQI: {check}", "status": "⚠️ Warning", "explanation": "Not explicitly addressed."})
-
-    # ----- 29. Missing Information section -----
-    if re.search(r"Missing Information", article_text):
-        rules.append({"rule": "Missing Information section present (if outdated content)", "status": "✅ Followed",
-                      "explanation": "Has a section for outdated info."})
-    else:
-        rules.append({"rule": "Missing Information section present (if outdated content)", "status": "⚠️ Undetermined",
-                      "explanation": "Not needed if all information is up to date."})
-
-    # ----- 30. Callout line breaks use Shift+Enter -----
-    if re.search(r"Shift\s*\+\s*Enter", article_text):
-        rules.append({"rule": "Callout line breaks use Shift+Enter", "status": "✅ Followed",
-                      "explanation": "Correct line break method."})
-    else:
-        rules.append({"rule": "Callout line breaks use Shift+Enter", "status": "⚠️ Info",
-                      "explanation": "Not mentioned; use Shift+Enter to add new lines inside callouts."})
-
-    # =====================================================================
-    # NEW CHECKS from provided documents (31-37)
-    # =====================================================================
-
-    # ----- 31. Title length -----
-    title = None
-    title_match = re.search(r'^Title:\s*(.+)', article_text, re.MULTILINE | re.IGNORECASE)
-    if title_match:
-        title = title_match.group(1).strip()
-    if not title:
-        for line in article_text.splitlines():
-            stripped = line.strip()
-            if stripped and not re.match(r'^(SECTION|##|\[\[|\{|\[|\|)', stripped):
-                title = stripped
-                break
-    if title:
-        if len(title) <= 120:
-            rules.append({"rule": "Article title is within 120 characters", "status": "✅ Followed",
-                          "explanation": f"Title length: {len(title)} characters."})
-        else:
-            rules.append({"rule": "Article title is within 120 characters", "status": "❌ Violated",
-                          "explanation": f"Title is {len(title)} characters – exceed maximum of 120."})
-    else:
-        rules.append({"rule": "Article title is within 120 characters", "status": "⚠️ Undetermined",
-                      "explanation": "Could not extract article title."})
-
-    # ----- 32. Content is not in FAQ format -----
-    if re.search(r'\b(FAQ|Frequently\s+Asked\s+Questions)\b', article_text, re.IGNORECASE):
-        rules.append({"rule": "Content is not in FAQ format", "status": "❌ Violated",
-                      "explanation": "Articles should not be in FAQ style. Use structured sections instead."})
-    else:
-        rules.append({"rule": "Content is not in FAQ format", "status": "✅ Followed",
-                      "explanation": "No FAQ pattern detected."})
-
-    # ----- 33. Hyperlink text is descriptive (not a bare URL) -----
-    bare_url_found = False
-    for line in article_text.splitlines():
-        urls = re.findall(r'https?://\S+', line)
-        for url in urls:
-            remaining = line.replace(url, '', 1).strip()
-            if len(remaining) <= 10:
-                bare_url_found = True
-                break
-        if bare_url_found:
-            break
-    if bare_url_found:
-        rules.append({"rule": "Hyperlink text is descriptive (not bare URL)", "status": "❌ Violated",
-                      "explanation": "Found at least one hyperlink that is just a raw URL. Use a descriptive link name."})
-    else:
-        rules.append({"rule": "Hyperlink text is descriptive (not bare URL)", "status": "✅ Followed",
-                      "explanation": "No bare URLs detected."})
-
-    # ----- 34. Avoid using accordions for important content -----
-    if re.search(r'accordion', article_text, re.IGNORECASE):
-        rules.append({"rule": "Avoid using accordions for important content", "status": "⚠️ Warning",
-                      "explanation": "Accordions can impair accessibility and printing. Ensure critical info is not collapsed."})
-    else:
-        rules.append({"rule": "Avoid using accordions for important content", "status": "✅ Followed",
-                      "explanation": "No accordions mentioned."})
-
-    # ----- 35. Bullets use standard characters -----
-    ACCEPTABLE_BULLETS = {
-        '-', '*', '•', '◦', '▪', '▸', '▹', '‣', '⁃', '➢', '–', '—', '▪', '❖', '❑', '❒',
-        '✓', '✔'
-    }
-    non_standard_found = False
-    for line in article_text.splitlines():
-        stripped = line.strip()
-        if not stripped:
+    for p in paragraphs:
+        if not (p["is_heading"] or p["is_title"] or p["is_caption"]):
             continue
-        m = re.match(r'^(\S)(?:\s)', stripped)
-        if m:
-            first_char = m.group(1)
-            if first_char.isalnum():
+        text = p["text"].strip()
+        if not text:
+            continue
+
+        # ---- Run-level checks (italic, all-caps) ----
+        for run in p["runs"]:
+            if not run["text"].strip():
                 continue
-            if first_char not in ACCEPTABLE_BULLETS:
-                non_standard_found = True
-                break
-    if non_standard_found:
-        rules.append({"rule": "Bullets use standard characters", "status": "⚠️ Warning",
-                      "explanation": "Found non‑standard bullet characters. Use plain dashes or standard bullets."})
-    else:
-        rules.append({"rule": "Bullets use standard characters", "status": "✅ Followed",
-                      "explanation": "Bullets appear standard."})
+            if run["italic"]:
+                bad.append(f'[{p["style"]}] "{text[:50]}" – italic text')
+            if run["all_caps"] or (run["text"] == run["text"].upper() and run["text"].isalpha()):
+                bad.append(f'[{p["style"]}] "{text[:50]}" – all-caps text')
 
-    # ----- 36. Avoid all‑caps text -----
-    all_caps_lines = 0
-    for line in article_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.isdigit():
+        # ---- Paragraph-level check: title case ----
+        words = text.split()
+        if len(words) > 2:
+            # Count words that start with uppercase (excluding common short words)
+            common_lower = {'and', 'of', 'the', 'to', 'for', 'with', 'on', 'at', 'by', 'in', 'a', 'an'}
+            title_case_count = sum(1 for w in words if w and w[0].isupper() and w.lower() not in common_lower)
+            if title_case_count > len(words) / 2:
+                bad.append(f'[{p["style"]}] "{text[:50]}" – title case (use sentence case)')
+
+    if not bad:
+        return [{"rule": "Heading Formatting (No Caps/Italics)", "status": STATUS_OK,
+                 "explanation": "No headings/titles/captions use all-caps or italics."}]
+
+    return [{"rule": "Heading Formatting (No Caps/Italics)", "status": STATUS_VIOLATED,
+             "explanation": (
+                 "Headings, titles, and captions must not use italics or ALL CAPS:\n"
+                 + "\n".join(f"  • {b}" for b in bad[:6])
+                 + ("\n  …and more." if len(bad) > 6 else "")
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 3. Underline – only for hyperlinks
+# ---------------------------------------------------------------------------
+
+def check_hyperlink_formatting(doc_data: dict) -> list[dict]:
+    """
+    Rule: Hyperlinks must not be bold or italic. Underline is allowed (and expected).
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    violations = []
+
+    for p in paragraphs:
+        # First, collect all hyperlink display texts from the paragraph
+        display_texts = [hl.get("display_text", "").strip() for hl in p["hyperlinks"] if hl.get("display_text", "").strip()]
+        
+        # Now examine each run that is underlined
+        for run in p["runs"]:
+            run_text = run["text"].strip()
+            if not run_text or not run.get("underline"):
+                continue
+            
+            # Check if this underlined run is bold or italic
+            is_bold = run.get("bold", False)
+            is_italic = run.get("italic", False)
+            
+            if is_bold or is_italic:
+                # Try to match this run to a hyperlink display text
+                matched = False
+                for disp in display_texts:
+                    # Normalise both strings: remove common markers like ***, *, _, etc.
+                    clean_run = run_text.strip('*_ ')
+                    clean_disp = disp.strip('*_ ')
+                    if clean_disp in clean_run or clean_run in clean_disp:
+                        matched = True
+                        break
+                
+                # If we found a match or the run is underlined (likely a hyperlink), flag it
+                if matched or display_texts:  # if there are any hyperlinks in the paragraph
+                    style_issues = []
+                    if is_bold:
+                        style_issues.append("bold")
+                    if is_italic:
+                        style_issues.append("italic")
+                    violations.append(
+                        f'Underlined text "{run_text[:40]}…" uses {" and ".join(style_issues)} (only underline permitted).'
+                    )
+    
+    if not violations:
+        return [{"rule": "Hyperlink Formatting (Hyperlinks:o Bold/Italic)", "status": STATUS_OK,
+                 "explanation": "No hyperlinks use bold or italic styling – only underline (allowed)."}]
+    
+    # Violations exist – report them
+    return [{"rule": "Hyperlink Formatting (No Bold/Italic)", "status": STATUS_VIOLATED,
+             "explanation": (
+                 f"Found {len(violations)} hyperlink(s) with prohibited bold/italic formatting:\n"
+                 + "\n".join(f"  • {v}" for v in violations[:5])
+                 + ("\n  …and more." if len(violations) > 5 else "")
+             )}]
+
+
+def check_underline_usage(doc_data: dict) -> list[dict]:
+    """
+    Rule: Do not use underlined text unless it is a hyperlink.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    issues = []
+
+    for p in paragraphs:
+        # Collect the display text of all actual hyperlinks in this paragraph
+        hl_texts = {h["display_text"].strip().lower() for h in p["hyperlinks"]}
+
+        for run in p["runs"]:
+            if run["underline"] and run["text"].strip():
+                run_text = run["text"].strip()
+                # Ignore if this run is the text of a hyperlink
+                if run_text.lower() not in hl_texts and not _is_url(run_text):
+                    issues.append(f'"{run_text[:50]}" – underlined but not a hyperlink')
+
+    if not issues:
+        return [{"rule": "Underline (Hyperlinks Only)", "status": STATUS_OK,
+                 "explanation": "Underline is only used for hyperlinks."}]
+
+    return [{"rule": "Underline (Hyperlinks Only)", "status": STATUS_VIOLATED,
+             "explanation": (
+                 "Underline should only be used for hyperlinks. "
+                 f"Found {len(issues)} instance(s):\n"
+                 + "\n".join(f"  • {i}" for i in issues[:5])
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 4. Sentence capitalisation – only first word + proper nouns
+# ---------------------------------------------------------------------------
+
+def check_sentence_capitalisation(doc_data: dict) -> list[dict]:
+    """
+    Rule: Capitalise only the first word of each sentence and proper nouns.
+    Detects words that are fully uppercase mid-sentence (suggesting shouting
+    or careless capitalisation) and sentences that do not start with a capital.
+    Ignores short acronyms (≤4 chars) as they are likely intentional.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    issues: list[str] = []
+
+    sentence_re = re.compile(r'(?<=[.!?])\s+')
+    all_caps_word = re.compile(r'\b[A-Z]{5,}\b')  # 5+ consecutive capitals = suspicious
+
+    for p in _body_paragraphs(paragraphs):
+        text = p["text"].strip()
+        if not text:
             continue
-        if stripped.isupper() and len(stripped) > 10:
-            all_caps_lines += 1
-    if all_caps_lines > 3:
-        rules.append({"rule": "Avoid all‑caps text", "status": "⚠️ Warning",
-                      "explanation": f"Found {all_caps_lines} lines of all‑uppercase text. Use sentence case for readability."})
+        sentences = sentence_re.split(text)
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            # Does the sentence start with a capital (or digit)?
+            if sent[0].isalpha() and not sent[0].isupper():
+                snippet = sent[:60]
+                issues.append(f'Sentence does not start with a capital: "{snippet}…"')
+            # Detect suspicious all-caps words (excludes short acronyms)
+            for match in all_caps_word.finditer(sent):
+                word = match.group()
+                issues.append(f'Possible unnecessary all-caps word: "{word}" in "{sent[:50]}…"')
+
+    if not issues:
+        return [{"rule": "Sentence Capitalisation", "status": STATUS_OK,
+                 "explanation": "Capitalisation appears consistent with guidelines."}]
+
+    return [{"rule": "Sentence Capitalisation", "status": STATUS_WARNING,
+             "explanation": (
+                 f"Found {len(issues)} possible capitalisation issue(s) "
+                 "(first word of sentence + proper nouns only):\n"
+                 + "\n".join(f"  • {i}" for i in issues[:6])
+                 + ("\n  …and more." if len(issues) > 6 else "")
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 5. Font size – minimum 12pt
+# ---------------------------------------------------------------------------
+
+def check_font_size(doc_data: dict) -> list[dict]:
+    """
+    Rule: Use text at a minimum size of 12pt.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    too_small: list[str] = []
+
+    for p in paragraphs:
+        for run in p["runs"]:
+            text = run["text"].strip()
+            if not text:
+                continue
+            size = run["font_size_pt"]
+            if size is not None and size < 12:
+                snippet = text[:40]
+                too_small.append(
+                    f'"{snippet}" – {size}pt in [{p["style"]}]'
+                )
+
+    if not too_small:
+        default_size = doc_data.get("default_size")
+        if default_size and default_size < 12:
+            return [{"rule": "Font Size (≥ 12pt)", "status": STATUS_VIOLATED,
+                     "explanation": f"Document default font size is {default_size}pt (minimum is 12pt)."}]
+        return [{"rule": "Font Size (≥ 12pt)", "status": STATUS_OK,
+                 "explanation": "All detected text is at least 12pt."}]
+
+    return [{"rule": "Font Size (≥ 12pt)", "status": STATUS_VIOLATED,
+             "explanation": (
+                 f"Found {len(too_small)} run(s) smaller than 12pt:\n"
+                 + "\n".join(f"  • {t}" for t in too_small[:6])
+                 + ("\n  …and more." if len(too_small) > 6 else "")
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 6. Sans-serif font
+# ---------------------------------------------------------------------------
+
+def check_font_family(doc_data: dict) -> list[dict]:
+    """
+    Rule: Use a Sans Serif font throughout the document.
+    If font information is missing, issue a warning.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    serif_instances: list[str] = []
+    unknown_font_instances: list[str] = []
+    
+    for p in paragraphs:
+        for run in p["runs"]:
+            text = run["text"].strip()
+            if not text:
+                continue
+            is_ss = run.get("is_sans_serif")
+            font_name = run.get("font_name")
+            
+            if is_ss is False:
+                serif_instances.append(
+                    f'"{text[:40]}" uses "{font_name}" [{p["style"]}]'
+                )
+            elif is_ss is None and font_name is not None:
+                # font name exists but not in our sans-serif list – treat as serif
+                serif_instances.append(
+                    f'"{text[:40]}" uses "{font_name}" (unknown family) [{p["style"]}]'
+                )
+            elif is_ss is None and font_name is None:
+                # completely unknown font – record as unknown
+                if len(text) > 5:  # avoid tiny runs
+                    unknown_font_instances.append(
+                        f'"{text[:40]}" – font name unknown [{p["style"]}]'
+                    )
+    
+    if serif_instances:
+        unique = list(dict.fromkeys(serif_instances))
+        return [{"rule": "Sans-Serif Font", "status": STATUS_VIOLATED,
+                 "explanation": (
+                     f"Found {len(unique)} run(s) using a serif or unknown font family:\n"
+                     + "\n".join(f"  • {s}" for s in unique[:5])
+                     + ("\n  …and more." if len(unique) > 5 else "")
+                 )}]
+    
+    if unknown_font_instances:
+        # At least one unknown font – likely the document is using a serif font like Cambria
+        return [{"rule": "Sans-Serif Font", "status": STATUS_WARNING,
+                 "explanation": (
+                     "Font family could not be determined for some text. "
+                     "Please ensure the document uses a sans-serif font (e.g., Arial, Calibri, Verdana). "
+                     "If using Cambria or Times New Roman, this is a violation."
+                 )}]
+    
+    return [{"rule": "Sans-Serif Font", "status": STATUS_OK,
+             "explanation": "Document appears to use a sans-serif font."}]
+
+# ---------------------------------------------------------------------------
+# 7. Bullet points – used for lists; no non-standard characters
+# ---------------------------------------------------------------------------
+
+def check_bullet_usage(doc_data: dict, raw_text: str = "") -> list[dict]:
+    """
+    Rule: Use bullet points when creating lists.
+          Do not use non-standard characters as bullets.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    results = []
+
+    # 7a – Detect inline lists not formatted as bullet points
+    #      Heuristic: 3+ consecutive short lines starting with digits or
+    #      dashes but NOT using the List style.
+    list_like_re = re.compile(r"^\s*(\d+[\.\)]\s+|[•\-–—]\s+).+")
+    unformatted_list_count = 0
+    for p in paragraphs:
+        text = p["text"].strip()
+        if not text:
+            continue
+        if list_like_re.match(text) and not p["is_list"]:
+            unformatted_list_count += 1
+
+    if unformatted_list_count > 2:
+        results.append({
+            "rule": "Bullet Point Usage",
+            "status": STATUS_WARNING,
+            "explanation": (
+                f"Found {unformatted_list_count} paragraph(s) that look like "
+                "list items but are not formatted as proper bullet/list styles. "
+                "Use the List Bullet style for accessibility."
+            ),
+        })
     else:
-        rules.append({"rule": "Avoid all‑caps text", "status": "✅ Followed",
-                      "explanation": "No excessive all‑caps text."})
+        results.append({
+            "rule": "Bullet Point Usage",
+            "status": STATUS_OK,
+            "explanation": "List paragraphs appear to use proper list formatting.",
+        })
 
-    # ----- 37. Heading nesting: no skipped levels -----
-    if heading3_used and not heading2_used:
-        rules.append({"rule": "Heading nesting: no skipped levels", "status": "❌ Violated",
-                      "explanation": "Heading 3 used without Heading 2. Maintain logical hierarchy."})
+    # 7b – Non-standard bullet characters
+    bad_bullets: list[str] = []
+    for p in paragraphs:
+        if not p["is_list"]:
+            continue
+        bc = p["bullet_char"]
+        if bc and bc not in STANDARD_BULLET_CHARS:
+            bad_bullets.append(f'"{bc}" in: "{p["text"][:50]}"')
+
+        # Also check first character of runs for image/graphic bullets (len check)
+        first_run_text = p["runs"][0]["text"].strip() if p["runs"] else ""
+        if first_run_text and len(first_run_text) == 1:
+            char = first_run_text
+            if (
+                ord(char) > 127
+                and char not in STANDARD_BULLET_CHARS
+                and not char.isalpha()
+            ):
+                bad_bullets.append(f'Non-standard bullet character U+{ord(char):04X} "{char}"')
+
+    if bad_bullets:
+        results.append({
+            "rule": "Non-Standard Bullet Characters",
+            "status": STATUS_VIOLATED,
+            "explanation": (
+                "Only standard bullet characters (•, –, -, ○, ▪, ▸) are permitted. "
+                f"Found {len(bad_bullets)} issue(s):\n"
+                + "\n".join(f"  • {b}" for b in bad_bullets[:5])
+            ),
+        })
     else:
-        rules.append({"rule": "Heading nesting: no skipped levels", "status": "✅ Followed",
-                      "explanation": "Heading levels appear correctly nested."})
+        results.append({
+            "rule": "Non-Standard Bullet Characters",
+            "status": STATUS_OK,
+            "explanation": "All detected bullets use standard characters.",
+        })
 
-    # =====================================================================
-    # ADDITIONAL CHECKS (38-45) based on both documents
-    # =====================================================================
+    return results
 
-    # ----- 38. Keywords contain no country / site names -----
-    country_names = {
-        'afghanistan', 'albania', 'algeria', 'andorra', 'angola', 'argentina', 'armenia', 'australia',
-        'austria', 'azerbaijan', 'bahamas', 'bahrain', 'bangladesh', 'barbados', 'belarus', 'belgium',
-        'belize', 'benin', 'bhutan', 'bolivia', 'bosnia', 'botswana', 'brazil', 'brunei', 'bulgaria',
-        'burkina faso', 'burundi', 'cambodia', 'cameroon', 'canada', 'cape verde', 'chad', 'chile',
-        'china', 'colombia', 'comoros', 'congo', 'costa rica', 'croatia', 'cuba', 'cyprus', 'czechia',
-        'denmark', 'djibouti', 'dominica', 'dominican republic', 'ecuador', 'egypt', 'el salvador',
-        'equatorial guinea', 'eritrea', 'estonia', 'eswatini', 'ethiopia', 'fiji', 'finland', 'france',
-        'gabon', 'gambia', 'georgia', 'germany', 'ghana', 'greece', 'grenada', 'guatemala', 'guinea',
-        'guinea-bissau', 'guyana', 'haiti', 'honduras', 'hungary', 'iceland', 'india', 'indonesia',
-        'iran', 'iraq', 'ireland', 'israel', 'italy', 'jamaica', 'japan', 'jordan', 'kazakhstan', 'kenya',
-        'kiribati', 'korea', 'kosovo', 'kuwait', 'kyrgyzstan', 'laos', 'latvia', 'lebanon', 'lesotho',
-        'liberia', 'libya', 'liechtenstein', 'lithuania', 'luxembourg', 'madagascar', 'malawi', 'malaysia',
-        'maldives', 'mali', 'malta', 'marshall islands', 'mauritania', 'mauritius', 'mexico', 'micronesia',
-        'moldova', 'monaco', 'mongolia', 'montenegro', 'morocco', 'mozambique', 'myanmar', 'namibia',
-        'nauru', 'nepal', 'netherlands', 'new zealand', 'nicaragua', 'niger', 'nigeria', 'north macedonia',
-        'norway', 'oman', 'pakistan', 'palau', 'palestine', 'panama', 'papua new guinea', 'paraguay',
-        'peru', 'philippines', 'poland', 'portugal', 'qatar', 'romania', 'russia', 'rwanda',
-        'saint kitts', 'saint lucia', 'saint vincent', 'samoa', 'san marino', 'sao tome', 'saudi arabia',
-        'senegal', 'serbia', 'seychelles', 'sierra leone', 'singapore', 'slovakia', 'slovenia',
-        'solomon islands', 'somalia', 'south africa', 'south sudan', 'spain', 'sri lanka', 'sudan',
-        'suriname', 'sweden', 'switzerland', 'syria', 'taiwan', 'tajikistan', 'tanzania', 'thailand',
-        'timor-leste', 'togo', 'tonga', 'trinidad and tobago', 'tunisia', 'turkey', 'turkmenistan',
-        'tuvalu', 'uganda', 'ukraine', 'united arab emirates', 'united kingdom', 'usa', 'united states',
-        'uruguay', 'uzbekistan', 'vanuatu', 'vatican', 'venezuela', 'vietnam', 'yemen', 'zambia', 'zimbabwe'
-    }
-    country_in_keywords = False
-    if kw_list:
-        for kw in kw_list:
-            kw_stripped = kw.strip().lower()
-            if kw_stripped in country_names:
-                country_in_keywords = True
-                break
-    if country_in_keywords:
-        rules.append({"rule": "Keywords: no country/site names", "status": "❌ Violated",
-                      "explanation": "One or more keywords are country names. Remove them."})
+
+# ---------------------------------------------------------------------------
+# 8. Bold overuse – WARNING only (not violation)
+# ---------------------------------------------------------------------------
+# Algorithm: for each body paragraph with ≥20 words, if bold_words / total_words > 0.10
+# (i.e. more than 1 bold word per 10 words, or ~5 in 50), flag as a warning.
+# Headings and titles are excluded.
+
+BOLD_RATIO_THRESHOLD = 0.10   # 10 % of words – (~5 in 50)
+MIN_WORDS_FOR_BOLD_CHECK = 20 # ignore very short paragraphs
+ITALIC_RATIO_THRESHOLD = 0.10   # 10%
+MIN_WORDS_FOR_ITALIC_CHECK = 20
+
+def check_italics_overuse(doc_data: dict) -> list[dict]:
+    """
+    Rule: Avoid overuse of italics in body text (advisory, treated as a warning).
+    Italic words should not exceed ~10 % of a paragraph's word count.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    offenders = []
+
+    for p in _body_paragraphs(paragraphs):   # only body text, not headings
+        para_text = p["text"]
+        total_words = _word_count(para_text)
+        if total_words < MIN_WORDS_FOR_ITALIC_CHECK:
+            continue
+
+        italic_words = sum(
+            _word_count(run["text"])
+            for run in p["runs"]
+            if run["italic"] and run["text"].strip()
+        )
+        ratio = italic_words / total_words if total_words else 0
+        if ratio > ITALIC_RATIO_THRESHOLD:
+            snippet = para_text[:60].strip()
+            offenders.append(
+                f'"{snippet}…" – {italic_words}/{total_words} words italic ({ratio:.0%})'
+            )
+
+    if not offenders:
+        return [{"rule": "Italics Overuse", "status": STATUS_OK,
+                 "explanation": "Italics are used sparingly within body paragraphs."}]
+
+    return [{"rule": "Italics Overuse", "status": STATUS_WARNING,
+             "explanation": (
+                 f"Found {len(offenders)} paragraph(s) where italics exceed "
+                 f"the ~{ITALIC_RATIO_THRESHOLD:.0%} guideline.\n"
+                 + "\n".join(f"  • {o}" for o in offenders[:5])
+                 + ("\n  …and more." if len(offenders) > 5 else "")
+             )}]
+
+def check_bold_overuse(doc_data: dict) -> list[dict]:
+    """
+    Rule: Avoid overuse of bold (advisory, treated as a warning).
+    Bold words should not exceed ~10 % of a paragraph's word count.
+    Headings and titles are excluded from this check.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    offenders: list[str] = []
+
+    for p in _body_paragraphs(paragraphs):
+        para_text = p["text"]
+        total_words = _word_count(para_text)
+        if total_words < MIN_WORDS_FOR_BOLD_CHECK:
+            continue
+
+        bold_words = sum(
+            _word_count(run["text"])
+            for run in p["runs"]
+            if run["bold"] and run["text"].strip()
+        )
+        ratio = bold_words / total_words if total_words else 0
+        if ratio > BOLD_RATIO_THRESHOLD:
+            snippet = para_text[:60].strip()
+            offenders.append(
+                f'"{snippet}…" – {bold_words}/{total_words} words bold '
+                f"({ratio:.0%})"
+            )
+
+    if not offenders:
+        return [{"rule": "Bold Overuse", "status": STATUS_OK,
+                 "explanation": "Bold is used sparingly within body paragraphs."}]
+
+    return [{"rule": "Bold Overuse", "status": STATUS_WARNING,
+             "explanation": (
+                 f"Found {len(offenders)} paragraph(s) where bold exceeds "
+                 f"the ~{BOLD_RATIO_THRESHOLD:.0%} guideline "
+                 f"(≈ 5 bold words per 50-word paragraph). "
+                 "Avoid overusing bold for emphasis:\n"
+                 + "\n".join(f"  • {o}" for o in offenders[:5])
+                 + ("\n  …and more." if len(offenders) > 5 else "")
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 9. Italics overuse – WARNING only (not violation)
+# ---------------------------------------------------------------------------
+# Same algorithm as bold. Additionally, any italic text in headings is a VIOLATION
+# (handled by check_heading_formatting), so here we only look at body text.
+
+ITALIC_RATIO_THRESHOLD = 0.10
+MIN_WORDS_FOR_ITALIC_CHECK = 20
+
+
+def check_italics_overuse(doc_data: dict) -> list[dict]:
+    """
+    Rule: Avoid overuse of italics in body text (advisory, treated as a warning).
+    Italic words should not exceed ~10 % of a paragraph's word count.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    offenders: list[str] = []
+
+    for p in _body_paragraphs(paragraphs):
+        para_text = p["text"]
+        total_words = _word_count(para_text)
+        if total_words < MIN_WORDS_FOR_ITALIC_CHECK:
+            continue
+
+        italic_words = sum(
+            _word_count(run["text"])
+            for run in p["runs"]
+            if run["italic"] and run["text"].strip()
+        )
+        ratio = italic_words / total_words if total_words else 0
+        if ratio > ITALIC_RATIO_THRESHOLD:
+            snippet = para_text[:60].strip()
+            offenders.append(
+                f'"{snippet}…" – {italic_words}/{total_words} words italic '
+                f"({ratio:.0%})"
+            )
+
+    if not offenders:
+        return [{"rule": "Italics Overuse", "status": STATUS_OK,
+                 "explanation": "Italics are used sparingly within body paragraphs."}]
+
+    return [{"rule": "Italics Overuse", "status": STATUS_WARNING,
+             "explanation": (
+                 f"Found {len(offenders)} paragraph(s) where italics exceed "
+                 f"the ~{ITALIC_RATIO_THRESHOLD:.0%} guideline. "
+                 "Avoid overusing italics; use bold or structural emphasis instead:\n"
+                 + "\n".join(f"  • {o}" for o in offenders[:5])
+                 + ("\n  …and more." if len(offenders) > 5 else "")
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 10. Hyperlink naming – no bare URLs as display text
+# ---------------------------------------------------------------------------
+
+def check_hyperlink_naming(doc_data: dict) -> list[dict]:
+    """
+    Rule: Hyperlinks should use a simple naming convention that adequately
+          describes where it takes you. Don't display links just using URLs.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    bare_urls: list[str] = []
+
+    for p in paragraphs:
+        for hl in p["hyperlinks"]:
+            display = hl.get("display_text", "").strip()
+            url = hl.get("url", "").strip()
+            # Flag if display text IS a URL or is empty
+            if not display or _is_url(display):
+                bare_urls.append(f'"{display or url}" → {url}')
+
+        # Also scan runs for underlined text that looks like a raw URL
+        # (catches hyperlinks whose relationships weren't captured)
+        for run in p["runs"]:
+            text = run["text"].strip()
+            if run["underline"] and _is_url(text):
+                if not any(text in h.get("display_text", "") for h in p["hyperlinks"]):
+                    bare_urls.append(f'Bare URL as display text: "{text[:70]}"')
+
+    if not bare_urls:
+        return [{"rule": "Hyperlink Naming", "status": STATUS_OK,
+                 "explanation": "All hyperlinks have descriptive display text."}]
+
+    return [{"rule": "Hyperlink Naming", "status": STATUS_VIOLATED,
+             "explanation": (
+                 f"Found {len(bare_urls)} hyperlink(s) displaying raw URLs instead "
+                 "of descriptive text:\n"
+                 + "\n".join(f"  • {u}" for u in bare_urls[:5])
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 11. Table of Contents – required for multi-page documents
+# ---------------------------------------------------------------------------
+
+def check_table_of_contents(doc_data: dict) -> list[dict]:
+    """
+    Rule: Contents and indexes are essential for documents with several
+          pages or chapters (guideline threshold: > 4 pages).
+    """
+    page_count = doc_data.get("page_count", 1)
+    has_toc = doc_data.get("has_toc", False)
+    has_headings = any(
+        p["is_heading"] for p in doc_data.get("paragraphs", [])
+    )
+
+    if page_count <= 4:
+        return [{"rule": "Table of Contents", "status": STATUS_OK,
+                 "explanation": f"Document is ~{page_count} page(s) – TOC not required."}]
+
+    if has_headings and not has_toc:
+        return [{"rule": "Table of Contents", "status": STATUS_WARNING,
+                 "explanation": (
+                     f"Document is approximately {page_count} page(s) with headings "
+                     "but no Table of Contents was detected. "
+                     "A TOC is recommended for accessibility in longer documents."
+                 )}]
+
+    return [{"rule": "Table of Contents", "status": STATUS_OK,
+             "explanation": (
+                 "Table of Contents present."
+                 if has_toc else
+                 f"Document is ~{page_count} page(s) with no detected headings – TOC may not be required."
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 12. Acronyms – flag undefined acronyms
+# ---------------------------------------------------------------------------
+
+# Acronyms that are universally understood and should not be flagged
+_ALLOWED_ACRONYMS = {
+    "GSK", "UK", "US", "USA", "EU", "UN", "WHO", "CEO", "CFO", "HR",
+    "IT", "R&D", "PDF", "HTML", "URL", "ID", "FAQ", "AI", "API",
+}
+
+_ACRONYM_RE = re.compile(r"\b([A-Z]{2,})\b")
+_DEFINED_RE = re.compile(r"\b([A-Z][a-z]+(?: [A-Z][a-z]+)+)\s+\(([A-Z]{2,})\)")
+
+
+def check_acronyms(raw_text: str) -> list[dict]:
+    """
+    Rule: Avoid acronyms without definition, or jargon people may not recognise.
+    Flags acronyms that appear before they are defined (format: Full Name (ACRONYM)).
+    """
+    if not raw_text.strip():
+        return [{"rule": "Acronyms & Jargon", "status": STATUS_OK,
+                 "explanation": "No plain text available for acronym analysis."}]
+
+    # Collect all defined acronyms
+    defined = {m.group(2) for m in _DEFINED_RE.finditer(raw_text)}
+    defined |= _ALLOWED_ACRONYMS
+
+    # Find all acronyms in the text
+    all_acronyms = [m.group(1) for m in _ACRONYM_RE.finditer(raw_text)]
+
+    # Find those that are never defined
+    undefined = sorted({a for a in all_acronyms if a not in defined})
+
+    if not undefined:
+        return [{"rule": "Acronyms & Jargon", "status": STATUS_OK,
+                 "explanation": "All acronyms appear to be defined or are commonly known."}]
+
+    return [{"rule": "Acronyms & Jargon", "status": STATUS_WARNING,
+             "explanation": (
+                 f"Found {len(undefined)} acronym(s) that may not be defined "
+                 "or commonly understood:\n"
+                 + "  " + ", ".join(undefined[:15])
+                 + ("\n  …and more." if len(undefined) > 15 else "")
+                 + "\n\nDefine each acronym on first use: Full Name (FN)."
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 13. Inclusive language
+# ---------------------------------------------------------------------------
+
+_NON_INCLUSIVE: dict[str, str] = {
+    # Gender-exclusive terms
+    r"\bguys\b": "everyone / team / folks",
+    r"\bmanpower\b": "workforce / staff / personnel",
+    r"\bmankind\b": "humanity / humankind / people",
+    r"\bmanmade\b": "artificial / manufactured / synthetic",
+    r"\bblacklist\b": "blocklist / denylist",
+    r"\bwhitelist\b": "allowlist / safelist",
+    r"\bchairman\b": "chair / chairperson",
+    r"\bstewardess\b": "flight attendant",
+    r"\bhostess\b": "host",
+    r"\bsalesman\b": "sales representative / sales associate",
+    r"\bpoliceman\b": "police officer",
+    r"\bfireman\b": "firefighter",
+    r"\bhe or she\b": "they",
+    r"\bhe\/she\b": "they",
+    r"\bhis\/her\b": "their",
+    # Ableist / potentially exclusionary
+    r"\bcrazy\b": "unexpected / difficult / extreme",
+    r"\binsane\b": "extreme / unbelievable",
+    r"\blame\b": "blame (consider whether more neutral phrasing applies)",
+    r"\bdumb\b": "unclear / confusing",
+    r"\bblind spot\b": "gap / oversight",
+    # Cultural idioms (may confuse non-native speakers)
+    r"\bball park\b": "approximate / rough estimate",
+    r"\bballpark\b": "approximate / rough estimate",
+    r"\bboil the ocean\b": "do too much",
+    r"\bdriving blind\b": "working without information",
+    r"\bthrow under the bus\b": "unfairly blame someone",
+    r"\bpivot\b": "change direction (if used as pure business jargon)",
+}
+
+
+def check_inclusive_language(raw_text: str) -> list[dict]:
+    """
+    Rule: Ensure you write using inclusive language, making choices that are
+          respectful of people's different backgrounds, cultures and experience.
+          Avoid jargon, sayings, idioms, and language people may not recognise.
+    """
+    if not raw_text.strip():
+        return [{"rule": "Inclusive Language", "status": STATUS_OK,
+                 "explanation": "No plain text available for inclusive language analysis."}]
+
+    text_lower = raw_text.lower()
+    findings: list[str] = []
+
+    for pattern, suggestion in _NON_INCLUSIVE.items():
+        if re.search(pattern, text_lower):
+            term = pattern.replace(r"\b", "").replace("\\", "")
+            findings.append(f'"{term}" → consider: {suggestion}')
+
+    if not findings:
+        return [{"rule": "Inclusive Language", "status": STATUS_OK,
+                 "explanation": "No obviously non-inclusive or exclusionary language detected."}]
+
+    return [{"rule": "Inclusive Language", "status": STATUS_WARNING,
+             "explanation": (
+                 f"Found {len(findings)} potentially non-inclusive term(s). "
+                 "Review and update where appropriate:\n"
+                 + "\n".join(f"  • {f}" for f in findings)
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 14. Low-contrast colour warning
+# ---------------------------------------------------------------------------
+# Orange #F36633 on white is borderline; flag text using it at small sizes.
+
+_LOW_CONTRAST_COLOURS = {
+    "F36633",  # GSK orange
+    "FF6600", "FF9900", "FFCC00", "FFD700",  # common yellows/oranges
+    "99CC00", "66CC00",  # light greens
+    "00CCFF", "33CCFF",  # light blues
+}
+
+
+def check_low_contrast_colour(doc_data: dict) -> list[dict]:
+    """
+    Rule: When using low-contrast colours (e.g. orange #F36633), use at
+          least 12pt text (the guideline explicitly calls this out).
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    issues: list[str] = []
+
+    for p in paragraphs:
+        for run in p["runs"]:
+            colour = (run.get("color_rgb") or "").upper()
+            size = run.get("font_size_pt")
+            text = run["text"].strip()
+            if colour in _LOW_CONTRAST_COLOURS and text:
+                if size is not None and size < 12:
+                    issues.append(
+                        f'"{text[:40]}" – colour #{colour} at {size}pt '
+                        f"[{p['style']}]"
+                    )
+
+    if not issues:
+        return [{"rule": "Low-Contrast Colour Size", "status": STATUS_OK,
+                 "explanation": "No low-contrast colour text found below 12pt."}]
+
+    return [{"rule": "Low-Contrast Colour Size", "status": STATUS_VIOLATED,
+             "explanation": (
+                 "Low-contrast colours (e.g. orange) must be used at ≥12pt. "
+                 f"Found {len(issues)} instance(s):\n"
+                 + "\n".join(f"  • {i}" for i in issues[:5])
+             )}]
+
+
+# ---------------------------------------------------------------------------
+# 15. Layout – white space / clutter heuristic
+# ---------------------------------------------------------------------------
+
+def check_layout_whitespace(doc_data: dict) -> list[dict]:
+    """
+    Rule: Keep design layouts uncluttered with plenty of white space.
+    Heuristic: flag documents where >85 % of paragraphs are non-empty and
+    very long (>150 words), suggesting dense, unbroken blocks of text.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    body = _body_paragraphs(paragraphs)
+    if not body:
+        return [{"rule": "Layout – White Space", "status": STATUS_OK,
+                 "explanation": "No body paragraphs to evaluate."}]
+
+    long_paras = [p for p in body if _word_count(p["text"]) > 150]
+    ratio = len(long_paras) / len(body)
+
+    if ratio > 0.40:
+        return [{"rule": "Layout – White Space", "status": STATUS_WARNING,
+                 "explanation": (
+                     f"{len(long_paras)} of {len(body)} body paragraphs are very long "
+                     "(>150 words). Consider breaking up dense text with subheadings, "
+                     "bullet points, or shorter paragraphs to improve readability and "
+                     "allow more white space."
+                 )}]
+
+    return [{"rule": "Layout – White Space", "status": STATUS_OK,
+             "explanation": "Paragraph lengths appear reasonable for an accessible layout."}]
+
+
+# ---------------------------------------------------------------------------
+# 16. Heading hierarchy – headings used at consistent levels
+# ---------------------------------------------------------------------------
+
+def check_heading_hierarchy(doc_data: dict) -> list[dict]:
+    """
+    Rule: Use headings, sub-headings, and body copy consistently at different
+          weights and sizes to create a clear structure and hierarchy.
+    Flags: heading levels that are skipped (e.g. H1 → H3, no H2).
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    heading_levels = []
+    heading_re = re.compile(r"heading\s+(\d+)", re.IGNORECASE)
+
+    for p in paragraphs:
+        m = heading_re.search(p["style"])
+        if m:
+            heading_levels.append(int(m.group(1)))
+
+    if not heading_levels:
+        return [{"rule": "Heading Hierarchy", "status": STATUS_OK,
+                 "explanation": "No headings detected – or document uses a flat structure."}]
+
+    issues: list[str] = []
+    prev = 0
+    for level in heading_levels:
+        if level - prev > 1 and prev != 0:
+            issues.append(
+                f"Heading level jumped from H{prev} to H{level} "
+                f"(H{prev + 1} was skipped)"
+            )
+        prev = level
+
+    if issues:
+        return [{"rule": "Heading Hierarchy", "status": STATUS_WARNING,
+                 "explanation": (
+                     "Skipping heading levels can confuse screen readers. "
+                     "Found the following jumps:\n"
+                     + "\n".join(f"  • {i}" for i in issues)
+                 )}]
+
+    return [{"rule": "Heading Hierarchy", "status": STATUS_OK,
+             "explanation": "Heading levels are used in a consistent hierarchy."}]
+             
+def check_real_heading_styles(doc_data: dict) -> list[dict]:
+    """
+    Flag paragraphs that appear to be headings (e.g., short, bold, standalone)
+    but do not use a proper Heading style.
+    Also flag title case in these pseudo‑headings.
+    """
+    paragraphs = doc_data.get("paragraphs", [])
+    violations = []
+    warning_details = []
+
+    for p in paragraphs:
+        text = p["text"].strip()
+        if not text or p["is_heading"] or p["is_title"] or p["is_caption"]:
+            continue
+
+        # Heuristic: short line (≤ 60 chars), bold, and not a list item
+        if len(text) <= 60 and p["runs"] and any(run["bold"] for run in p["runs"]):
+            if not p["is_list"]:
+                # This is a fake heading
+                violations.append(f'"{text[:50]}" (style: {p["style"]})')
+
+                # Check for title case (every major word capitalised)
+                words = text.split()
+                if len(words) > 2:
+                    common_lower = {'and', 'of', 'the', 'to', 'for', 'with', 'on', 'at', 'by', 'in', 'a', 'an'}
+                    title_case_count = sum(1 for w in words if w and w[0].isupper() and w.lower() not in common_lower)
+                    if title_case_count > len(words) / 2:
+                        warning_details.append(f'"{text[:50]}" – title case (use sentence case)')
+
+    if violations:
+        explanation = (
+            f"Found {len(violations)} paragraph(s) that look like headings "
+            "but are not formatted with a proper Heading style. "
+            "Use Heading 1, Heading 2, etc. for accessibility.\n"
+            + "\n".join(f"  • {v}" for v in violations[:8])
+        )
+        if warning_details:
+            explanation += "\n\nAdditionally, title case detected in some headings:\n" + "\n".join(f"  • {w}" for w in warning_details[:5])
+        return [{"rule": "Real Heading Styles (WCAG 1.3.1)", "status": STATUS_VIOLATED, "explanation": explanation}]
+
+    return [{"rule": "Real Heading Styles", "status": STATUS_OK, "explanation": "All apparent headings use proper heading styles or the document has no headings."}]
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def run_all_checks(
+    raw_text: str = "",
+    doc_data: dict | None = None,
+) -> list[dict]:
+    """
+    Run every accessibility and inclusion check.
+
+    Parameters
+    ----------
+    raw_text  : plain text extracted from the document (used for text-only checks)
+    doc_data  : rich formatting dict from extraction.extract_rich_docx_data()
+                (required for formatting checks; if None, formatting checks are skipped)
+
+    Returns
+    -------
+    List of result dicts with keys: rule, status, explanation.
+    """
+    results: list[dict] = []
+
+    if doc_data:
+        results += check_text_alignment(doc_data)
+        results += check_heading_formatting(doc_data)
+        results += check_real_heading_styles(doc_data)   # if you added this earlier
+        results += check_underline_usage(doc_data)
+        results += check_sentence_capitalisation(doc_data)
+        results += check_font_size(doc_data)
+        results += check_font_family(doc_data)
+        results += check_bullet_usage(doc_data, raw_text)
+        results += check_bold_overuse(doc_data)
+        results += check_italics_overuse(doc_data) 
+        results += check_italics_overuse(doc_data)
+        results += check_hyperlink_naming(doc_data)
+        results += check_hyperlink_formatting(doc_data)   # <-- ADD THIS LINE
+        results += check_table_of_contents(doc_data)
+        results += check_low_contrast_colour(doc_data)
+        results += check_layout_whitespace(doc_data)
+        results += check_heading_hierarchy(doc_data)
     else:
-        if kw_list:
-            rules.append({"rule": "Keywords: no country/site names", "status": "✅ Followed",
-                          "explanation": "No country names found in keywords."})
-        else:
-            rules.append({"rule": "Keywords: no country/site names", "status": "⚠️ Undetermined",
-                          "explanation": "Keywords section missing or unparseable."})
+        # Formatting checks unavailable – add informational placeholder
+        results.append({
+            "rule": "Formatting Checks",
+            "status": STATUS_WARNING,
+            "explanation": (
+                "Rich formatting data is not available (only supported for .docx files). "
+                "Checks for font size, alignment, bold/italic overuse, etc. were skipped."
+            ),
+        })
 
-    # ----- 39. Acronyms defined on first use -----
-    acronym_candidates = re.findall(r'\b([A-Z]{2,}(?:\.[A-Z])?)\b', article_text)
-    acronym_candidates = [a for a in acronym_candidates if len(a) >= 2 and a not in {'US', 'UK', 'EU', 'GSK', 'IT', 'HR', 'AI', 'OK', 'PDF', 'URL'}]
-    undefined_acronyms = []
-    for acro in acronym_candidates:
-        def_pattern = re.compile(r'\b' + re.escape(acro) + r'\s*\(([^)]+)\)|\(([^)]+)\)\s*' + re.escape(acro), re.IGNORECASE)
-        if not def_pattern.search(article_text):
-            undefined_acronyms.append(acro)
-    if undefined_acronyms:
-        rules.append({"rule": "Acronyms are defined on first use", "status": "⚠️ Warning",
-                      "explanation": f"Found undefined acronyms: {', '.join(undefined_acronyms[:5])}. Spell out the first time they appear."})
+    # Text-only checks (work on both PDF text and DOCX plain text)
+    if raw_text.strip():
+        results += check_acronyms(raw_text)
+        results += check_inclusive_language(raw_text)
     else:
-        rules.append({"rule": "Acronyms are defined on first use", "status": "✅ Followed",
-                      "explanation": "All detected acronyms appear to be defined."})
+        results.append({
+            "rule": "Text Analysis",
+            "status": STATUS_WARNING,
+            "explanation": "No plain text was available for acronym and language analysis.",
+        })
 
-    # ----- 40. Video: Captions provided -----
-    if "video" in text_lower:
-        if re.search(r'captions?|subtitles?', article_text, re.IGNORECASE):
-            rules.append({"rule": "Video captions provided", "status": "✅ Followed",
-                          "explanation": "Mentions captions/subtitles for video."})
-        else:
-            rules.append({"rule": "Video captions provided", "status": "❌ Violated",
-                          "explanation": "Video present but no mention of captions."})
-    else:
-        rules.append({"rule": "Video captions provided", "status": "⚠️ Not applicable",
-                      "explanation": "No video mentioned in the article."})
+    return results
 
-    # ----- 41. Video: Autoplay disabled -----
-    if "video" in text_lower:
-        if re.search(r'do not autoplay|no autoplay|click to play|manually play', article_text, re.IGNORECASE):
-            rules.append({"rule": "Video does not autoplay", "status": "✅ Followed",
-                          "explanation": "Autoplay explicitly disabled."})
-        else:
-            rules.append({"rule": "Video does not autoplay", "status": "❌ Violated",
-                          "explanation": "Video should not autoplay; no explicit statement found."})
-    else:
-        rules.append({"rule": "Video does not autoplay", "status": "⚠️ Not applicable",
-                      "explanation": "No video mentioned."})
 
-    # ----- 42. Hashtags use CamelCase (#InitialCaps) -----
-    hashtags = re.findall(r'#(\w+)', article_text)
-    non_camel = []
-    for tag in hashtags:
-        if not re.search(r'[a-z][A-Z]', tag) and tag.islower():
-            non_camel.append(f'#{tag}')
-    if non_camel:
-        rules.append({"rule": "Hashtags use CamelCase (#LikeThis)", "status": "❌ Violated",
-                      "explanation": f"Non‑CamelCase hashtags: {', '.join(non_camel[:5])}. Capitalize each word."})
-    else:
-        rules.append({"rule": "Hashtags use CamelCase (#LikeThis)", "status": "✅ Followed",
-                      "explanation": "All hashtags are CamelCase or not present."})
-
-    # ----- 43. Links requiring sign‑in include note -----
-    has_url = bool(re.search(r'https?://', article_text))
-    has_signin_note = bool(re.search(r'requires sign[-\s]in to access', article_text, re.IGNORECASE))
-    if has_url:
-        if has_signin_note:
-            rules.append({"rule": "Links requiring sign‑in include note", "status": "✅ Followed",
-                          "explanation": "Sign‑in disclaimer present near links."})
-        else:
-            rules.append({"rule": "Links requiring sign‑in include note", "status": "⚠️ Warning",
-                          "explanation": "If any link requires sign‑in, add '(requires sign in to access)'."})
-    else:
-        rules.append({"rule": "Links requiring sign‑in include note", "status": "⚠️ Not applicable",
-                      "explanation": "No hyperlinks detected in the article."})
-
-    # ----- 44. Alternative formats statement -----
-    if re.search(r'alternative formats?|available on request|accessible formats?', article_text, re.IGNORECASE):
-        rules.append({"rule": "Alternative formats offered", "status": "✅ Followed",
-                      "explanation": "Statement about alternative formats found."})
-    else:
-        rules.append({"rule": "Alternative formats offered", "status": "⚠️ Warning",
-                      "explanation": "Consider adding a note that alternative formats are available on request."})
-
-    # ----- 45. Body text uses Paragraph style -----
-    if re.search(r'Paragraph\s*(style|format)', article_text, re.IGNORECASE):
-        rules.append({"rule": "Body text uses Paragraph style", "status": "✅ Followed",
-                      "explanation": "Paragraph style mentioned for body text."})
-    else:
-        rules.append({"rule": "Body text uses Paragraph style", "status": "⚠️ Warning",
-                      "explanation": "Not explicitly stated; ensure body text uses the 'Paragraph' style."})
-
-    # =====================================================================
-    # NEW CHECKS (46-53) based on missing rules identified
-    # =====================================================================
-
-    # ----- 46. Index/link page style prohibited -----
-    link_count = len(re.findall(r'https?://', article_text))
-    total_lines = len([l for l in article_text.splitlines() if l.strip()])
-    if link_count > 10 and (link_count > 0.5 * total_lines):
-        rules.append({"rule": "Article is not an index/link page", "status": "❌ Violated",
-                      "explanation": f"Too many links ({link_count}) relative to content lines ({total_lines}). Use a 'Getting Started' article instead."})
-    else:
-        rules.append({"rule": "Article is not an index/link page", "status": "✅ Followed",
-                      "explanation": "Link-to-text ratio is acceptable."})
-
-    # ----- 47. Calendar/schedule/time-bound content -----
-    if re.search(r'\b(202[2-9]|2030)\b', article_text) and re.search(r'\b(schedule|calendar|holiday|training dates|events)\b', article_text, re.IGNORECASE):
-        rules.append({"rule": "Time-bound content warning", "status": "⚠️ Warning",
-                      "explanation": "Calendar/schedule detected. Ensure a retirement date is set, or convert to a generic process article."})
-    else:
-        rules.append({"rule": "Time-bound content warning", "status": "✅ Followed",
-                      "explanation": "No obvious calendar/schedule content."})
-
-    # ----- 48. Policy references must link to external official source -----
-    if len(re.findall(r'\bpolicy\b', text_lower)) >= 2:
-        if not re.search(r'https?://', article_text):
-            rules.append({"rule": "Policy summary links to external source", "status": "❌ Violated",
-                          "explanation": "Article mentions policy but contains no hyperlink to the controlled document."})
-        else:
-            rules.append({"rule": "Policy summary links to external source", "status": "✅ Followed",
-                          "explanation": "External link present."})
-    else:
-        rules.append({"rule": "Policy summary links to external source", "status": "⚠️ Undetermined",
-                      "explanation": "No policy mention; check not applicable."})
-
-    # ----- 49. Dedicated Policy section when policy is mentioned -----
-    policy_mentions = len(re.findall(r'\bpolicy\b', text_lower))
-    if policy_mentions >= 2:
-        if re.search(r'\bPolicy\s*(Summary|Information)?\b', article_text):
-            rules.append({"rule": "Policy section present (when policy‑related)", "status": "✅ Followed",
-                          "explanation": "Found a dedicated Policy section."})
-        else:
-            rules.append({"rule": "Policy section present (when policy‑related)", "status": "⚠️ Warning",
-                          "explanation": "Article mentions policy but lacks a 'Policy' section. Add one per structure guidelines."})
-    else:
-        rules.append({"rule": "Policy section present (when policy‑related)", "status": "⚠️ Undetermined",
-                      "explanation": "Not policy‑related."})
-
-    # ----- 50. Video is not the sole source of information -----
-    if "video" in text_lower:
-        word_count = len(cleaned_text.split()) if cleaned_text else 0
-        has_transcript = re.search(r'transcript|text alternative|text version', article_text, re.IGNORECASE)
-        if word_count > 200 and has_transcript:
-            rules.append({"rule": "Video not sole information source", "status": "✅ Followed",
-                          "explanation": "Sufficient text and transcript/alternative mentioned."})
-        else:
-            rules.append({"rule": "Video not sole information source", "status": "⚠️ Warning",
-                          "explanation": "Video present but limited text description or no transcript. Provide written info alongside the video."})
-    else:
-        rules.append({"rule": "Video not sole information source", "status": "⚠️ Not applicable",
-                      "explanation": "No video mentioned."})
-
-    # ----- 51. No links to Team Sites (SharePoint) in public-facing articles -----
-    team_site_links = re.findall(r'https?://[^\s]*(teams\.microsoft|myteams\.gsk|sharepoint|\.gsk\.com/sites/)[^\s]*', article_text, re.IGNORECASE)
-    if team_site_links:
-        rules.append({"rule": "No Team Site links", "status": "⚠️ Warning",
-                      "explanation": f"Found Team Site/SharePoint link(s). Public articles should not rely on restricted-access sites. Use ServiceNow links or add '(requires sign in)'."})
-    else:
-        rules.append({"rule": "No Team Site links", "status": "✅ Followed",
-                      "explanation": "No Team Site links detected."})
-
-    # ----- 52. Positive, person‑first language -----
-    negative_terms = [
-        r'\bsuffers?\s+from\b', r'\bhandicapped\b', r'\bthe\s+disabled\b', r'\bdysfunction\b',
-        r'\bbound\s+to\b', r'\bchallenged\b', r'\bcrippled\b', r'\binvalid\b', r'\bdefect\b',
-        r'\bafflicted\b', r'\bstricken\b', r'\babnormal\b'
-    ]
-    found_negative = []
-    for pattern in negative_terms:
-        if re.search(pattern, article_text, re.IGNORECASE):
-            match = re.search(pattern, article_text, re.IGNORECASE)
-            if match:
-                found_negative.append(match.group())
-    if found_negative:
-        rules.append({"rule": "Positive, person‑first language", "status": "⚠️ Warning",
-                      "explanation": f"Potentially negative terms found: {', '.join(found_negative[:5])}. Use inclusive, person‑first language."})
-    else:
-        rules.append({"rule": "Positive, person‑first language", "status": "✅ Followed",
-                      "explanation": "No negative terminology detected."})
-
-    # ----- 53. Instructions use present tense (avoid past/sequential phrasing) -----
-    instruction_lines = [l.strip() for l in article_text.splitlines() if re.match(r'^\d+\.\s+', l.strip())]
-    past_tense_patterns = [
-        r'\bafter\s+you\s+have\b', r'\bonce\s+you\s+have\b', r'\bif\s+you\s+have\s+clicked\b',
-        r'\byou\s+will\s+have\b', r'\byou\s+would\s+have\b', r'\byou\s+clicked\b',
-        r'\bhad\s+to\b', r'\bhave\s+already\b', r'\bwas\s+opened\b', r'\bit\s+will\s+then\b'
-    ]
-    past_found = False
-    for line in instruction_lines:
-        for pat in past_tense_patterns:
-            if re.search(pat, line, re.IGNORECASE):
-                past_found = True
-                break
-        if past_found:
-            break
-    if past_found:
-        rules.append({"rule": "Instructions use present tense", "status": "⚠️ Warning",
-                      "explanation": "Found past or sequential phrasing in numbered steps. Use direct present tense (e.g., 'Click ...' not 'After you have clicked ...')."})
-    else:
-        rules.append({"rule": "Instructions use present tense", "status": "✅ Followed",
-                      "explanation": "No past‑tense issues detected in instructions."})
-
-    # =====================================================================
-    # ADDITIONAL CHECKS (54-59) from further document analysis
-    # =====================================================================
-
-    # ----- 54. Video motion warning present -----
-    if "video" in text_lower:
-        if re.search(r'motion\s+warn|warning.*motion|video.*contains.*motion', article_text, re.IGNORECASE):
-            rules.append({"rule": "Video motion warning present", "status": "✅ Followed",
-                          "explanation": "Motion warning mentioned."})
-        else:
-            rules.append({"rule": "Video motion warning present", "status": "⚠️ Warning",
-                          "explanation": "If video contains motion, add a warning before it plays."})
-    else:
-        rules.append({"rule": "Video motion warning present", "status": "⚠️ Not applicable",
-                      "explanation": "No video mentioned."})
-
-    # ----- 55. Terminology: 'HR Case' -> 'HR Ticket', 'HR Service Center' -> 'HR' -----
-    deprecated_terms = {'HR Case': 'HR Ticket', 'HR Service Center': 'HR'}
-    found_deprecated = []
-    for old, new in deprecated_terms.items():
-        if re.search(re.escape(old), article_text, re.IGNORECASE):
-            found_deprecated.append(old)
-    if found_deprecated:
-        rules.append({"rule": "Terminology: Use 'HR Ticket' not 'HR Case'; 'HR' not 'HR Service Center'", "status": "❌ Violated",
-                      "explanation": f"Found deprecated term(s): {', '.join(found_deprecated)}. Replace with approved terminology."})
-    else:
-        rules.append({"rule": "Terminology: Use 'HR Ticket' not 'HR Case'; 'HR' not 'HR Service Center'", "status": "✅ Followed",
-                      "explanation": "No deprecated terms found."})
-
-    # ----- 56. Capitalize 'Employee' and 'Manager' -----
-    lower_emp = len(re.findall(r'\bemployee\b', article_text))
-    lower_mgr = len(re.findall(r'\bmanager\b', article_text))
-    if lower_emp > 0 or lower_mgr > 0:
-        rules.append({"rule": "Capitalize 'Employee' and 'Manager'", "status": "⚠️ Warning",
-                      "explanation": f"Found 'employee' ({lower_emp} times) or 'manager' ({lower_mgr} times) in lowercase. Capitalize them."})
-    else:
-        rules.append({"rule": "Capitalize 'Employee' and 'Manager'", "status": "✅ Followed",
-                      "explanation": "Appropriate capitalization."})
-
-    # ----- 57. Article has an Instructions or Information section -----
-    has_instructions = re.search(r'\bInstructions?\b', article_text, re.IGNORECASE)
-    has_information = re.search(r'\bInformation\b', article_text, re.IGNORECASE)
-    if has_instructions or has_information:
-        rules.append({"rule": "Instructions or Information section present", "status": "✅ Followed",
-                      "explanation": "Article contains an Instructions or Information section."})
-    else:
-        rules.append({"rule": "Instructions or Information section present", "status": "⚠️ Warning",
-                      "explanation": "Missing both Instructions and Information sections. Add one per article structure."})
-
-    # ----- 58. Keywords: avoid overly generic terms -----
-    generic_terms = {
-        'process', 'system', 'application', 'service', 'request', 'management',
-        'data', 'report', 'tool', 'platform', 'portal', 'support', 'help', 'guide',
-        'information', 'user', 'employee', 'manager', 'access', 'form', 'policy'
-    }
-    generic_found = []
-    if kw_list:
-        for kw in kw_list:
-            kw_stripped = kw.strip().lower()
-            if kw_stripped in generic_terms:
-                generic_found.append(kw_stripped)
-        if generic_found:
-            rules.append({"rule": "Keywords: avoid generic terms", "status": "⚠️ Warning",
-                          "explanation": f"Generic keyword(s) found: {', '.join(generic_found[:5])}. Use specific, descriptive keywords."})
-        else:
-            rules.append({"rule": "Keywords: avoid generic terms", "status": "✅ Followed",
-                          "explanation": "No generic keywords detected."})
-    else:
-        rules.append({"rule": "Keywords: avoid generic terms", "status": "⚠️ Undetermined",
-                      "explanation": "Keywords section missing."})
-
-    # ----- 59. Bulleted list used for informative content (optional) -----
-    bullet_lines = [l for l in article_text.splitlines() if re.match(r'^\s*[\-\*•]\s+', l)]
-    if not bullet_lines and len(re.findall(r'\bnote\b|\binfo\b', text_lower)) > 3:
-        rules.append({"rule": "Bulleted list present for informative content", "status": "⚠️ Info",
-                      "explanation": "Article may benefit from bulleted lists for readability."})
-    else:
-        rules.append({"rule": "Bulleted list present for informative content", "status": "✅ Followed",
-                      "explanation": "Bulleted lists are used appropriately or not needed."})
-
-    return rules
+# ---------------------------------------------------------------------------
+# Backwards-compatibility alias
+# ---------------------------------------------------------------------------
+# app.py and compliance/__init__.py import check_article_compliance;
+# run_all_checks is the canonical name going forward — both work.
+check_article_compliance = run_all_checks
