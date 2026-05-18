@@ -119,9 +119,9 @@ if selected_file and selected_file in st.session_state.processed_files:
         else:
             results = file_data["results"]
 
-        passed = [r for r in results if "Followed" in r["status"]]
-        warnings = [r for r in results if "Warning" in r["status"] or "Undetermined" in r["status"] or "Not applicable" in r["status"] or "Info" in r["status"]]
-        violated = [r for r in results if "Violated" in r["status"]]
+        passed = [r for r in results if "✅ OK" in r["status"]]
+        warnings = [r for r in results if "⚠️ Warning" in r["status"] or "Undetermined" in r["status"] or "Not applicable" in r["status"] or "Info" in r["status"]]
+        violated = [r for r in results if "❌ Violated" in r["status"]]
 
         tab1, tab2, tab3 = st.tabs([
             f" Passed ({len(passed)})",

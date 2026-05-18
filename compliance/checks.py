@@ -661,10 +661,6 @@ def check_table_of_contents(doc_data: dict) -> list[dict]:
         p["is_heading"] for p in doc_data.get("paragraphs", [])
     )
 
-    if page_count <= 4:
-        return [{"rule": "Table of Contents", "status": STATUS_OK,
-                 "explanation": f"Document is ~{page_count} page(s) – TOC not required."}]
-
     if has_headings and not has_toc:
         return [{"rule": "Table of Contents", "status": STATUS_WARNING,
                  "explanation": (
@@ -991,7 +987,6 @@ def run_all_checks(
         results += check_font_family(doc_data)
         results += check_bullet_usage(doc_data, raw_text)
         results += check_bold_overuse(doc_data)
-        results += check_italics_overuse(doc_data) 
         results += check_italics_overuse(doc_data)
         results += check_hyperlink_naming(doc_data)
         results += check_hyperlink_formatting(doc_data)   # <-- ADD THIS LINE
